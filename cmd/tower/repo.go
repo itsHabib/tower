@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"text/tabwriter"
@@ -53,12 +54,16 @@ func cmdRepoAdd(args []string) error {
 		}
 		path = top
 	}
-	r, err := c.workflow.AddRepo(ctx, path, *name)
+	return runRepoAdd(ctx, c, path, *name, os.Stdout)
+}
+
+func runRepoAdd(ctx context.Context, c *cliCtx, path, name string, out io.Writer) error {
+	r, err := c.workflow.AddRepo(ctx, path, name)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("registered: %s at %s\n", r.Name, r.Path)
-	return nil
+	_, err = fmt.Fprintf(out, "registered: %s at %s\n", r.Name, r.Path)
+	return err
 }
 
 func cmdRepoLs(args []string) error {
@@ -72,16 +77,19 @@ func cmdRepoLs(args []string) error {
 		return err
 	}
 	defer cleanup()
+	return runRepoLs(ctx, c, os.Stdout)
+}
 
+func runRepoLs(ctx context.Context, c *cliCtx, out io.Writer) error {
 	repos, err := c.workflow.ListRepos(ctx)
 	if err != nil {
 		return err
 	}
 	if len(repos) == 0 {
-		fmt.Println("no repos registered. run `tower repo add` from a git repo.")
-		return nil
+		_, err := fmt.Fprintln(out, "no repos registered. run `tower repo add` from a git repo.")
+		return err
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	if _, err := fmt.Fprintln(w, "NAME\tPATH"); err != nil {
 		return err
 	}
@@ -101,18 +109,21 @@ func cmdRepoRm(args []string) error {
 	if fset.NArg() < 1 {
 		return errors.New("usage: tower repo rm <name>")
 	}
-	name := fset.Arg(0)
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
+	return runRepoRm(ctx, c, fset.Arg(0), os.Stdout)
+}
+
+func runRepoRm(ctx context.Context, c *cliCtx, name string, out io.Writer) error {
 	if err := c.workflow.RemoveRepo(ctx, name); err != nil {
 		return err
 	}
-	fmt.Printf("unregistered: %s\n", name)
-	return nil
+	_, err := fmt.Fprintf(out, "unregistered: %s\n", name)
+	return err
 }
 
 func cmdRepoPrune(args []string) error {
@@ -127,7 +138,10 @@ func cmdRepoPrune(args []string) error {
 		return err
 	}
 	defer cleanup()
+	return runRepoPrune(ctx, c, *dryRun, os.Stdout)
+}
 
+func runRepoPrune(ctx context.Context, c *cliCtx, dryRun bool, out io.Writer) error {
 	repos, err := c.workflow.ListRepos(ctx)
 	if err != nil {
 		return err
@@ -139,13 +153,17 @@ func cmdRepoPrune(args []string) error {
 		}
 	}
 	if len(missing) == 0 {
-		fmt.Println("nothing to prune.")
-		return nil
+		_, err := fmt.Fprintln(out, "nothing to prune.")
+		return err
 	}
-	if *dryRun {
-		fmt.Printf("would remove %d repo(s):\n", len(missing))
+	if dryRun {
+		if _, err := fmt.Fprintf(out, "would remove %d repo(s):\n", len(missing)); err != nil {
+			return err
+		}
 		for _, name := range missing {
-			fmt.Printf("  %s\n", name)
+			if _, err := fmt.Fprintf(out, "  %s\n", name); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -153,7 +171,9 @@ func cmdRepoPrune(args []string) error {
 		if err := c.workflow.RemoveRepo(ctx, name); err != nil {
 			return fmt.Errorf("remove %s: %w", name, err)
 		}
-		fmt.Printf("pruned: %s\n", name)
+		if _, err := fmt.Fprintf(out, "pruned: %s\n", name); err != nil {
+			return err
+		}
 	}
 	return nil
 }

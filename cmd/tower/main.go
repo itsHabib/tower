@@ -65,7 +65,7 @@ usage: tower <command> [args...]
 worktree commands:
   add <name>            create a worktree (uses cwd's repo, or --repo)
   rm <name>             tear down a worktree (--repo if name is ambiguous)
-  ls                    list all worktrees, grouped by repo
+  ls                    list all worktrees, grouped by repo (--flat, --json)
   open <name>           print worktree path (--repo if ambiguous)
   sync                  reconcile from git + refresh PR/CI from GitHub
   reconcile             reconcile from git only (no network)
