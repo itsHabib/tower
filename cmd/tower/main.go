@@ -38,6 +38,8 @@ func run(args []string) error {
 		return cmdRepo(rest)
 	case "shell":
 		return cmdShell(rest)
+	case "mcp":
+		return cmdMCP(rest)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -81,6 +83,11 @@ shell integration:
   shell [bash|zsh|powershell]
                         print a shell helper that adds a 'tcd' function;
                         wire it up with: eval "$(tower shell bash)"
+
+mcp:
+  mcp serve             run the MCP server over stdio so chat agents
+                        (Claude Code, Cursor, etc.) can drive tower.
+                        Register with: claude mcp add tower -- <path> mcp serve
 
 run with no args to open the TUI.`)
 }

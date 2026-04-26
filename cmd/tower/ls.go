@@ -80,17 +80,6 @@ func runLs(ctx context.Context, c *cliCtx, opts lsOpts, out io.Writer) error {
 	return nil
 }
 
-// jsonRow is the public shape of one row in `tower ls --json` output.
-// Slices are always non-nil so consumers see [] instead of null. The
-// pr field stays nullable because "no PR tracked" is a meaningful
-// state that downstream tools should handle explicitly.
-type jsonRow struct {
-	Worktree domain.Worktree     `json:"worktree"`
-	PR       *domain.PullRequest `json:"pr"`
-	Reviews  []domain.Review     `json:"reviews"`
-	Checks   []domain.CICheck    `json:"checks"`
-}
-
 func runLsJSON(ctx context.Context, c *cliCtx, mode tui.SortMode, out io.Writer) error {
 	worktrees, err := c.workflow.ListWorktrees(ctx)
 	if err != nil {
@@ -105,7 +94,7 @@ func runLsJSON(ctx context.Context, c *cliCtx, mode tui.SortMode, out io.Writer)
 }
 
 func writeJSON(w io.Writer, rows []tui.RowData) error {
-	out := make([]jsonRow, len(rows))
+	out := make([]domain.WorktreeView, len(rows))
 	for i, r := range rows {
 		reviews := r.Reviews
 		if reviews == nil {
@@ -115,7 +104,7 @@ func writeJSON(w io.Writer, rows []tui.RowData) error {
 		if checks == nil {
 			checks = []domain.CICheck{}
 		}
-		out[i] = jsonRow{Worktree: r.Worktree, PR: r.PR, Reviews: reviews, Checks: checks}
+		out[i] = domain.WorktreeView{Worktree: r.Worktree, PR: r.PR, Reviews: reviews, Checks: checks}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

@@ -81,15 +81,22 @@ type sqliteStore struct {
 }
 
 // OpenSQLite opens or creates a SQLite-backed Store at the given path,
-// applies the schema, and enables foreign-key cascades.
+// applies the schema, enables foreign-key cascades, and turns on WAL
+// mode so concurrent readers (TUI + MCP server) don't trip SQLITE_BUSY.
 func OpenSQLite(ctx context.Context, path string) (Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	for _, pragma := range []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA busy_timeout = 5000",
+	} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("%s: %w", pragma, err)
+		}
 	}
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		_ = db.Close()
