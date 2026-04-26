@@ -4,6 +4,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -43,22 +44,41 @@ const (
 
 // Model is the bubbletea model for the worktree board view.
 type Model struct {
-	ctx        context.Context
-	workflow   *workflow.Service
-	store      store.Store
-	rows       []worktreeRow
-	cursor     int
-	mode       ViewMode
-	filter     string
-	filtering  bool // true = keystrokes append to filter
-	syncing    bool
-	lastSync   time.Time
-	err        error
-	noRepos    bool
-	width      int
-	height     int
-	openOnExit string
+	ctx         context.Context
+	workflow    *workflow.Service
+	store       store.Store
+	rows        []worktreeRow
+	cursor      int
+	mode        ViewMode
+	filter      string
+	filtering   bool // true = keystrokes append to filter
+	syncing     bool
+	lastSync    time.Time
+	err         error
+	noRepos     bool
+	width       int
+	height      int
+	openOnExit  string
+	helpVisible bool
+	input       inputMode
+	inputBuf    string
+	inputTarget worktreeRow
+	stagedName  string // carried between inputClaudeName and inputClaudePrompt
 }
+
+// inputMode tracks which prompt is currently collecting input from the
+// user. Filter has its own field because it's a persistent display
+// mode; the others are one-shot prompts that act on enter.
+type inputMode int
+
+// Input modes for one-shot prompts (a/d/C). inputNone = no prompt active.
+const (
+	inputNone          inputMode = iota
+	inputAddName                 // typing a name for `a` (new tower-style worktree)
+	inputClaudeName              // typing a name for `C` stage 1 (worktree name)
+	inputClaudePrompt            // typing optional prompt for `C` stage 2
+	inputConfirmDelete           // showing y/N confirmation for `d`
+)
 
 type worktreeRow struct {
 	wt       domain.Worktree
@@ -99,6 +119,26 @@ type loadedMsg struct {
 type syncedMsg struct{ err error }
 
 type reconciledMsg struct{ err error }
+
+type addedMsg struct {
+	wt  *domain.Worktree
+	err error
+}
+
+type removedMsg struct{ err error }
+
+func addCmd(ctx context.Context, wf *workflow.Service, repoName, name string) tea.Cmd {
+	return func() tea.Msg {
+		wt, err := wf.Add(ctx, repoName, name)
+		return addedMsg{wt: wt, err: err}
+	}
+}
+
+func removeCmd(ctx context.Context, wf *workflow.Service, repoName, name string) tea.Cmd {
+	return func() tea.Msg {
+		return removedMsg{err: wf.Remove(ctx, repoName, name)}
+	}
+}
 
 func reconcileCmd(ctx context.Context, wf *workflow.Service) tea.Cmd {
 	return func() tea.Msg {
@@ -224,13 +264,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncing = true
 		return m, tea.Batch(syncCmd(m.ctx, m.workflow), next)
+	case addedMsg:
+		return m.afterMutation(msg.err)
+	case removedMsg:
+		return m.afterMutation(msg.err)
 	}
 	return m, nil
 }
 
+// afterMutation handles the common post-action flow for add/remove:
+// surface the error if any, otherwise reload the rows so the board
+// reflects the new state.
+func (m *Model) afterMutation(err error) (tea.Model, tea.Cmd) {
+	if err != nil {
+		m.err = err
+		return m, nil
+	}
+	m.err = nil
+	return m, loadCmd(m.ctx, m.workflow, m.store)
+}
+
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.helpVisible {
+		switch msg.String() {
+		case "?", "esc", "q":
+			m.helpVisible = false
+		}
+		return m, nil
+	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
+	}
+	if m.input != inputNone {
+		return m.handleInputKey(msg)
 	}
 	if m.handleNavKey(msg) {
 		return m, nil
@@ -285,6 +351,16 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "o":
 		m.openCursorPR()
+	case "c":
+		m.spawnClaudeAtCursor()
+	case "a":
+		m.startAddName()
+	case "d":
+		m.startConfirmDelete()
+	case "C":
+		m.startClaudeName()
+	case "?":
+		m.helpVisible = true
 	}
 	return m, nil
 }
@@ -342,4 +418,153 @@ func (m *Model) openCursorPR() {
 	if err := OpenInBrowser(m.ctx, pr.URL); err != nil {
 		m.err = err
 	}
+}
+
+func (m *Model) spawnClaudeAtCursor() {
+	visible := m.visibleRows()
+	if len(visible) == 0 {
+		return
+	}
+	if err := SpawnClaudeInTerminal(m.ctx, visible[m.cursor].wt.Path); err != nil {
+		m.err = err
+	}
+}
+
+// startAddName opens the prompt for `a`. Target repo comes from the
+// cursor row; if the board is empty, errors out (no repo to infer).
+func (m *Model) startAddName() {
+	visible := m.visibleRows()
+	if len(visible) == 0 {
+		m.err = errors.New("no row to infer repo from; use `tower add` from the shell instead")
+		return
+	}
+	m.inputTarget = visible[m.cursor]
+	m.input = inputAddName
+	m.inputBuf = ""
+	m.err = nil
+}
+
+// startClaudeName opens the prompt for `C`. Same target-resolution as
+// startAddName: cursor row's repo is the parent for `claude -w`.
+func (m *Model) startClaudeName() {
+	visible := m.visibleRows()
+	if len(visible) == 0 {
+		m.err = errors.New("no row to infer repo from")
+		return
+	}
+	m.inputTarget = visible[m.cursor]
+	m.input = inputClaudeName
+	m.inputBuf = ""
+	m.err = nil
+}
+
+// startConfirmDelete opens the y/N confirmation for `d`. Refuses on
+// the main worktree of a repo (path equals repo's registered path) so
+// you can't accidentally tear down the primary checkout.
+func (m *Model) startConfirmDelete() {
+	visible := m.visibleRows()
+	if len(visible) == 0 {
+		return
+	}
+	row := visible[m.cursor]
+	repo, err := m.store.GetRepo(m.ctx, row.wt.Repo)
+	if err != nil {
+		m.err = err
+		return
+	}
+	if repo != nil && repo.Path == row.wt.Path {
+		m.err = errors.New("refusing to remove main worktree of " + row.wt.Repo)
+		return
+	}
+	m.inputTarget = row
+	m.input = inputConfirmDelete
+	m.err = nil
+}
+
+func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.input == inputConfirmDelete {
+		return m.handleConfirmKey(msg)
+	}
+	return m.handleTextInputKey(msg)
+}
+
+func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		target := m.inputTarget
+		m.input = inputNone
+		return m, removeCmd(m.ctx, m.workflow, target.wt.Repo, target.wt.Branch)
+	case "n", "N", "esc", "enter":
+		m.input = inputNone
+	}
+	return m, nil
+}
+
+func (m *Model) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.input = inputNone
+		m.inputBuf = ""
+		m.stagedName = ""
+	case tea.KeyEnter:
+		return m.executeTextInput()
+	case tea.KeyBackspace:
+		if m.inputBuf != "" {
+			m.inputBuf = m.inputBuf[:len(m.inputBuf)-1]
+		}
+	case tea.KeyCtrlU:
+		m.inputBuf = ""
+	case tea.KeyRunes, tea.KeySpace:
+		m.inputBuf += string(msg.Runes)
+	default:
+		// ignore other keys while in text input
+	}
+	return m, nil
+}
+
+func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
+	buf := m.inputBuf
+	mode := m.input
+	target := m.inputTarget
+	m.inputBuf = ""
+
+	switch mode {
+	case inputAddName:
+		m.input = inputNone
+		if buf == "" {
+			m.err = errors.New("name required")
+			return m, nil
+		}
+		return m, addCmd(m.ctx, m.workflow, target.wt.Repo, buf)
+	case inputClaudeName:
+		if buf == "" {
+			m.input = inputNone
+			m.err = errors.New("name required")
+			return m, nil
+		}
+		// Move to the optional-prompt stage. Don't reset m.input yet.
+		m.stagedName = buf
+		m.input = inputClaudePrompt
+		return m, nil
+	case inputClaudePrompt:
+		m.input = inputNone
+		repo, err := m.store.GetRepo(m.ctx, target.wt.Repo)
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		if repo == nil {
+			m.err = errors.New("repo not found: " + target.wt.Repo)
+			return m, nil
+		}
+		if err := SpawnClaudeWithNewWorktree(m.ctx, repo.Path, m.stagedName, buf); err != nil {
+			m.err = err
+		}
+		m.stagedName = ""
+	case inputNone, inputConfirmDelete:
+		// not reachable here (filtered by handleInputKey).
+	}
+	return m, nil
 }

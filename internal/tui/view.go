@@ -22,6 +22,9 @@ func (m *Model) View() string {
 	if m.width == 0 {
 		return ""
 	}
+	if m.helpVisible {
+		return m.viewHelp()
+	}
 	var b strings.Builder
 	b.WriteString(m.viewHeader())
 	b.WriteString("\n\n")
@@ -31,13 +34,46 @@ func (m *Model) View() string {
 	return b.String()
 }
 
+const helpText = `TOWER
+
+NAVIGATION
+  j / down       next row
+  k / up         previous row
+  /              filter (substring on branch / repo / title)
+  esc            clear filter
+
+VIEW
+  g              toggle grouped / flat
+  ?              toggle this help
+
+ACTIONS
+  enter          cd into cursor row's worktree (exits tower)
+  a              add a new worktree in cursor row's repo
+  d              remove cursor row's worktree (refuses main)
+  o              open cursor row's PR in browser
+  c              spawn claude in cursor row's worktree (new tab)
+  C              spawn claude with a new worktree, optional initial prompt
+
+SYNC
+  s              sync from git + GitHub
+  r              reconcile from git only (no network)
+
+QUIT
+  q / ctrl+c     quit
+
+Press ? or esc to dismiss.`
+
+func (m *Model) viewHelp() string {
+	return titleStyle.Render(helpText)
+}
+
 func (m *Model) viewHeader() string {
 	title := titleStyle.Render("tower")
 	mode := "grouped"
 	if m.mode == ViewFlat {
 		mode = "flat"
 	}
-	hint := dimStyle.Render(fmt.Sprintf("[q] quit  [s] sync  [r] reload  [g] %s  [/] filter  [↑/↓] move  [enter] cd  [o] PR  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
+	hint := dimStyle.Render(fmt.Sprintf("[?] help  [q] quit  [s] sync  [g] %s  [/] filter  [enter] cd  [a] add  [c] claude  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
 	syncState := ""
 	if m.syncing {
 		syncState = pendingStyle.Render("◯ syncing…")
@@ -46,7 +82,25 @@ func (m *Model) viewHeader() string {
 	if m.filter != "" || m.filtering {
 		out += "\n" + m.viewFilterLine()
 	}
+	if m.input != inputNone {
+		out += "\n" + m.viewInputLine()
+	}
 	return out
+}
+
+func (m *Model) viewInputLine() string {
+	switch m.input {
+	case inputAddName:
+		return cursorStyle.Render(fmt.Sprintf("add to %s: %s_", m.inputTarget.wt.Repo, m.inputBuf))
+	case inputClaudeName:
+		return cursorStyle.Render(fmt.Sprintf("claude -w in %s (name): %s_", m.inputTarget.wt.Repo, m.inputBuf))
+	case inputClaudePrompt:
+		return cursorStyle.Render(fmt.Sprintf("initial prompt for %s (enter to skip): %s_", m.stagedName, m.inputBuf))
+	case inputConfirmDelete:
+		return cursorStyle.Render(fmt.Sprintf("remove %s/%s? [y/N]", m.inputTarget.wt.Repo, m.inputTarget.wt.Branch))
+	case inputNone:
+	}
+	return ""
 }
 
 func (m *Model) viewFilterLine() string {
