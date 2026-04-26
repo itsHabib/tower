@@ -48,11 +48,11 @@ VIEW
 
 ACTIONS
   enter          cd into cursor row's worktree (exits tower)
-  a              add a new worktree in cursor row's repo
+  a              add a new tower-style worktree in cursor row's repo
   d              remove cursor row's worktree (refuses main)
   o              open cursor row's PR in browser
-  c              spawn claude in cursor row's worktree (new tab)
-  C              spawn claude with a new worktree, optional initial prompt
+  c              spawn claude with a new worktree (asks: mode → name → prompt)
+                 mode = terminal (new tab) or background (headless via -p)
 
 SYNC
   s              sync from git + GitHub
@@ -92,15 +92,31 @@ func (m *Model) viewInputLine() string {
 	switch m.input {
 	case inputAddName:
 		return cursorStyle.Render(fmt.Sprintf("add to %s: %s_", m.inputTarget.wt.Repo, m.inputBuf))
+	case inputClaudeSpawnMode:
+		return cursorStyle.Render(fmt.Sprintf("spawn claude in %s — [t]erminal (new tab) or [b]ackground (headless)? esc to cancel", m.inputTarget.wt.Repo))
 	case inputClaudeName:
-		return cursorStyle.Render(fmt.Sprintf("claude -w in %s (name): %s_", m.inputTarget.wt.Repo, m.inputBuf))
+		return cursorStyle.Render(fmt.Sprintf("%s — worktree name: %s_", m.spawnTargetLabel(), m.inputBuf))
 	case inputClaudePrompt:
-		return cursorStyle.Render(fmt.Sprintf("initial prompt for %s (enter to skip): %s_", m.stagedName, m.inputBuf))
+		return cursorStyle.Render(fmt.Sprintf("%s — initial prompt for %s%s: %s_", m.spawnTargetLabel(), m.stagedName, m.promptHint(), m.inputBuf))
 	case inputConfirmDelete:
 		return cursorStyle.Render(fmt.Sprintf("remove %s/%s? [y/N]", m.inputTarget.wt.Repo, m.inputTarget.wt.Branch))
 	case inputNone:
 	}
 	return ""
+}
+
+func (m *Model) spawnTargetLabel() string {
+	if m.spawnTarget == SpawnBackground {
+		return "background"
+	}
+	return "terminal"
+}
+
+func (m *Model) promptHint() string {
+	if m.spawnTarget == SpawnBackground {
+		return " (required)"
+	}
+	return " (enter to skip)"
 }
 
 func (m *Model) viewFilterLine() string {

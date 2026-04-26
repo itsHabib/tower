@@ -63,7 +63,8 @@ type Model struct {
 	input       inputMode
 	inputBuf    string
 	inputTarget worktreeRow
-	stagedName  string // carried between inputClaudeName and inputClaudePrompt
+	stagedName  string      // carried between inputClaudeName and inputClaudePrompt
+	spawnTarget SpawnTarget // chosen during inputClaudeSpawnMode
 }
 
 // inputMode tracks which prompt is currently collecting input from the
@@ -71,13 +72,25 @@ type Model struct {
 // mode; the others are one-shot prompts that act on enter.
 type inputMode int
 
-// Input modes for one-shot prompts (a/d/C). inputNone = no prompt active.
+// Input modes for one-shot prompts (a/d/c). inputNone = no prompt active.
 const (
-	inputNone          inputMode = iota
-	inputAddName                 // typing a name for `a` (new tower-style worktree)
-	inputClaudeName              // typing a name for `C` stage 1 (worktree name)
-	inputClaudePrompt            // typing optional prompt for `C` stage 2
-	inputConfirmDelete           // showing y/N confirmation for `d`
+	inputNone            inputMode = iota
+	inputAddName                   // typing a name for `a` (new tower-style worktree)
+	inputClaudeSpawnMode           // picking [t]erminal / [b]ackground for `c`
+	inputClaudeName                // typing a worktree name for `c`
+	inputClaudePrompt              // typing optional initial prompt for `c`
+	inputConfirmDelete             // showing y/N confirmation for `d`
+)
+
+// SpawnTarget controls where a claude session runs after `c` spawn.
+type SpawnTarget int
+
+// Spawn targets: terminal opens a new tab and chats interactively;
+// background runs headless via `claude -p` and detaches from this
+// process so the session keeps running if you quit tower.
+const (
+	SpawnTerminal SpawnTarget = iota
+	SpawnBackground
 )
 
 type worktreeRow struct {
@@ -352,13 +365,11 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		m.openCursorPR()
 	case "c":
-		m.spawnClaudeAtCursor()
+		m.startClaudeSpawn()
 	case "a":
 		m.startAddName()
 	case "d":
 		m.startConfirmDelete()
-	case "C":
-		m.startClaudeName()
 	case "?":
 		m.helpVisible = true
 	}
@@ -420,16 +431,6 @@ func (m *Model) openCursorPR() {
 	}
 }
 
-func (m *Model) spawnClaudeAtCursor() {
-	visible := m.visibleRows()
-	if len(visible) == 0 {
-		return
-	}
-	if err := SpawnClaudeInTerminal(m.ctx, visible[m.cursor].wt.Path); err != nil {
-		m.err = err
-	}
-}
-
 // startAddName opens the prompt for `a`. Target repo comes from the
 // cursor row; if the board is empty, errors out (no repo to infer).
 func (m *Model) startAddName() {
@@ -444,17 +445,19 @@ func (m *Model) startAddName() {
 	m.err = nil
 }
 
-// startClaudeName opens the prompt for `C`. Same target-resolution as
-// startAddName: cursor row's repo is the parent for `claude -w`.
-func (m *Model) startClaudeName() {
+// startClaudeSpawn opens the prompt chain for `c`: pick spawn mode,
+// type a worktree name, type an optional initial prompt, then spawn.
+// Cursor row's repo is the parent for `claude -w`.
+func (m *Model) startClaudeSpawn() {
 	visible := m.visibleRows()
 	if len(visible) == 0 {
 		m.err = errors.New("no row to infer repo from")
 		return
 	}
 	m.inputTarget = visible[m.cursor]
-	m.input = inputClaudeName
+	m.input = inputClaudeSpawnMode
 	m.inputBuf = ""
+	m.stagedName = ""
 	m.err = nil
 }
 
@@ -482,10 +485,29 @@ func (m *Model) startConfirmDelete() {
 }
 
 func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.input == inputConfirmDelete {
+	switch m.input {
+	case inputConfirmDelete:
 		return m.handleConfirmKey(msg)
+	case inputClaudeSpawnMode:
+		return m.handleSpawnModeKey(msg)
+	case inputNone, inputAddName, inputClaudeName, inputClaudePrompt:
+		return m.handleTextInputKey(msg)
 	}
-	return m.handleTextInputKey(msg)
+	return m, nil
+}
+
+func (m *Model) handleSpawnModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "t", "T":
+		m.spawnTarget = SpawnTerminal
+		m.input = inputClaudeName
+	case "b", "B":
+		m.spawnTarget = SpawnBackground
+		m.input = inputClaudeName
+	case "esc":
+		m.input = inputNone
+	}
+	return m, nil
 }
 
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -549,6 +571,12 @@ func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
 		m.input = inputClaudePrompt
 		return m, nil
 	case inputClaudePrompt:
+		if m.spawnTarget == SpawnBackground && buf == "" {
+			// Background mode needs a prompt — claude -p has nothing to do
+			// without one. Stay in the prompt stage so the user can retype.
+			m.err = errors.New("background spawn requires a prompt")
+			return m, nil
+		}
 		m.input = inputNone
 		repo, err := m.store.GetRepo(m.ctx, target.wt.Repo)
 		if err != nil {
@@ -559,11 +587,18 @@ func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
 			m.err = errors.New("repo not found: " + target.wt.Repo)
 			return m, nil
 		}
-		if err := SpawnClaudeWithNewWorktree(m.ctx, repo.Path, m.stagedName, buf); err != nil {
-			m.err = err
+		var spawnErr error
+		switch m.spawnTarget {
+		case SpawnTerminal:
+			spawnErr = SpawnClaudeWithNewWorktree(m.ctx, repo.Path, m.stagedName, buf)
+		case SpawnBackground:
+			spawnErr = SpawnClaudeBackground(m.ctx, repo.Path, m.stagedName, buf)
+		}
+		if spawnErr != nil {
+			m.err = spawnErr
 		}
 		m.stagedName = ""
-	case inputNone, inputConfirmDelete:
+	case inputNone, inputClaudeSpawnMode, inputConfirmDelete:
 		// not reachable here (filtered by handleInputKey).
 	}
 	return m, nil
