@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -475,7 +476,10 @@ func (m *Model) startConfirmDelete() {
 		m.err = err
 		return
 	}
-	if repo != nil && repo.Path == row.wt.Path {
+	// filepath.Clean normalizes separators (registered repo paths come
+	// from filepath.Abs and use OS separators; git's worktree output
+	// uses forward slashes on Windows, so a raw == comparison missed).
+	if repo != nil && filepath.Clean(repo.Path) == filepath.Clean(row.wt.Path) {
 		m.err = errors.New("refusing to remove main worktree of " + row.wt.Repo)
 		return
 	}
