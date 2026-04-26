@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -37,9 +40,29 @@ func (h *handlers) register(s *mcp.Server) {
 	}, h.sync)
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "reconcile",
+		Description: "Reconcile worktrees from local git only — no GitHub network calls. Cheaper than sync; use when you only care about which worktrees exist and their dirty / ahead-behind state.",
+	}, h.reconcile)
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_repos",
 		Description: "List every registered repo (name + filesystem path).",
 	}, h.listRepos)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "register_repo",
+		Description: "Register a repo so tower starts tracking its worktrees. Path is required; the MCP server has no cwd context. Name defaults to the directory basename.",
+	}, h.registerRepo)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "unregister_repo",
+		Description: "Unregister a repo. Cascades to its tracked worktrees, PRs, reviews, and CI checks in tower's store. Does not touch the worktrees on disk.",
+	}, h.unregisterRepo)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "prune_repos",
+		Description: "Unregister repos whose path no longer exists on disk. Pass dry_run to report without removing.",
+	}, h.pruneRepos)
 }
 
 // ListWorktreesArgs is the input for list_worktrees.
@@ -174,6 +197,93 @@ func (h *handlers) sync(ctx context.Context, _ *mcp.CallToolRequest, _ SyncArgs)
 		out.Errors[k] = e.Error()
 	}
 	return nil, out, nil
+}
+
+// ReconcileArgs has no fields — reconcile sweeps every registered repo.
+type ReconcileArgs struct{}
+
+// ReconcileResult is a plain ack so the agent can verify success.
+type ReconcileResult struct {
+	OK bool `json:"ok"`
+}
+
+func (h *handlers) reconcile(ctx context.Context, _ *mcp.CallToolRequest, _ ReconcileArgs) (*mcp.CallToolResult, ReconcileResult, error) {
+	if err := h.workflow.Reconcile(ctx); err != nil {
+		return toolError("reconcile: %v", err), ReconcileResult{}, nil
+	}
+	return nil, ReconcileResult{OK: true}, nil
+}
+
+// RegisterRepoArgs is the input for register_repo. Path is required —
+// the MCP server can't infer a meaningful cwd from chat context.
+type RegisterRepoArgs struct {
+	Path string `json:"path" jsonschema:"absolute path to the repo on disk"`
+	Name string `json:"name,omitempty" jsonschema:"defaults to the basename of path"`
+}
+
+func (h *handlers) registerRepo(ctx context.Context, _ *mcp.CallToolRequest, args RegisterRepoArgs) (*mcp.CallToolResult, *domain.Repo, error) {
+	if args.Path == "" {
+		return toolError("path is required (mcp has no cwd context)"), nil, nil
+	}
+	r, err := h.workflow.AddRepo(ctx, args.Path, args.Name)
+	if err != nil {
+		return toolError("register: %v", err), nil, nil
+	}
+	return nil, r, nil
+}
+
+// UnregisterRepoArgs is the input for unregister_repo.
+type UnregisterRepoArgs struct {
+	Name string `json:"name" jsonschema:"name of the registered repo to drop from tower's store"`
+}
+
+// UnregisterResult confirms the deletion.
+type UnregisterResult struct {
+	Unregistered bool   `json:"unregistered"`
+	Name         string `json:"name"`
+}
+
+func (h *handlers) unregisterRepo(ctx context.Context, _ *mcp.CallToolRequest, args UnregisterRepoArgs) (*mcp.CallToolResult, UnregisterResult, error) {
+	if args.Name == "" {
+		return toolError("name is required"), UnregisterResult{}, nil
+	}
+	if err := h.workflow.RemoveRepo(ctx, args.Name); err != nil {
+		return toolError("unregister: %v", err), UnregisterResult{}, nil
+	}
+	return nil, UnregisterResult{Unregistered: true, Name: args.Name}, nil
+}
+
+// PruneReposArgs is the input for prune_repos.
+type PruneReposArgs struct {
+	DryRun bool `json:"dry_run,omitempty" jsonschema:"when true, report which repos would be unregistered without actually removing them"`
+}
+
+// PruneReposResult lists which repos were removed (or would be in dry-run).
+type PruneReposResult struct {
+	Pruned []string `json:"pruned"`
+	DryRun bool     `json:"dry_run"`
+}
+
+func (h *handlers) pruneRepos(ctx context.Context, _ *mcp.CallToolRequest, args PruneReposArgs) (*mcp.CallToolResult, PruneReposResult, error) {
+	repos, err := h.store.ListRepos(ctx)
+	if err != nil {
+		return nil, PruneReposResult{}, err
+	}
+	missing := []string{}
+	for _, r := range repos {
+		if _, statErr := os.Stat(r.Path); errors.Is(statErr, fs.ErrNotExist) {
+			missing = append(missing, r.Name)
+		}
+	}
+	if args.DryRun {
+		return nil, PruneReposResult{Pruned: missing, DryRun: true}, nil
+	}
+	for _, name := range missing {
+		if err := h.workflow.RemoveRepo(ctx, name); err != nil {
+			return toolError("remove %s: %v", name, err), PruneReposResult{}, nil
+		}
+	}
+	return nil, PruneReposResult{Pruned: missing, DryRun: false}, nil
 }
 
 // ListReposArgs has no fields.

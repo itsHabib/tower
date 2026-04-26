@@ -213,6 +213,116 @@ func TestListRepos(t *testing.T) {
 	}
 }
 
+func TestReconcileSweepsRegisteredRepos(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	if _, err := h.workflow.AddRepo(ctx, t.TempDir(), "myrepo"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _, err := h.callReconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Errorf("want OK=true: %+v", res)
+	}
+}
+
+func TestRegisterRepoRequiresPath(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+
+	_, errResult, err := h.callRegisterRepo(ctx, RegisterRepoArgs{Name: "x"})
+	if err != nil {
+		t.Fatalf("want tool error not protocol error: %v", err)
+	}
+	if errResult == nil || !errResult.IsError {
+		t.Errorf("missing path should produce IsError result, got %+v", errResult)
+	}
+}
+
+func TestRegisterRepoPersists(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	repoPath := t.TempDir()
+
+	r, errResult, err := h.callRegisterRepo(ctx, RegisterRepoArgs{Path: repoPath, Name: "myrepo"})
+	if err != nil || errResult != nil {
+		t.Fatalf("register: err=%v errResult=%+v", err, errResult)
+	}
+	if r.Name != "myrepo" || r.Path != repoPath {
+		t.Errorf("repo: %+v", r)
+	}
+	got, _ := h.store.GetRepo(ctx, "myrepo")
+	if got == nil {
+		t.Errorf("not persisted")
+	}
+}
+
+func TestUnregisterRepoDeletes(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	if _, err := h.workflow.AddRepo(ctx, t.TempDir(), "myrepo"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, errResult, err := h.callUnregisterRepo(ctx, UnregisterRepoArgs{Name: "myrepo"})
+	if err != nil || errResult != nil {
+		t.Fatalf("unregister: err=%v errResult=%+v", err, errResult)
+	}
+	if !res.Unregistered {
+		t.Errorf("expected Unregistered=true: %+v", res)
+	}
+	got, _ := h.store.GetRepo(ctx, "myrepo")
+	if got != nil {
+		t.Errorf("repo should be gone: %+v", got)
+	}
+}
+
+func TestPruneReposRemovesMissingPaths(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	// Register one real repo and one ghost (path doesn't exist).
+	live := t.TempDir()
+	if _, err := h.workflow.AddRepo(ctx, live, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.workflow.AddRepo(ctx, "/definitely/not/a/real/path/tower-mcp-test", "ghost"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry run reports only.
+	dry, _, err := h.callPruneRepos(ctx, PruneReposArgs{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dry.DryRun || len(dry.Pruned) != 1 || dry.Pruned[0] != "ghost" {
+		t.Errorf("dry run: %+v", dry)
+	}
+	got, _ := h.store.GetRepo(ctx, "ghost")
+	if got == nil {
+		t.Errorf("dry run should not have removed: %+v", got)
+	}
+
+	// Live run removes.
+	live2res, _, err := h.callPruneRepos(ctx, PruneReposArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live2res.DryRun || len(live2res.Pruned) != 1 || live2res.Pruned[0] != "ghost" {
+		t.Errorf("live run: %+v", live2res)
+	}
+	got, _ = h.store.GetRepo(ctx, "ghost")
+	if got != nil {
+		t.Errorf("ghost should be gone: %+v", got)
+	}
+	live2, _ := h.store.GetRepo(ctx, "live")
+	if live2 == nil {
+		t.Errorf("live repo should be untouched")
+	}
+}
+
 // Test shims call handlers without the SDK's request wrapper since
 // the handlers don't read req.Params for their own logic.
 
@@ -244,4 +354,24 @@ func (h *handlers) callSync(ctx context.Context) (SyncResult, *mcp.CallToolResul
 func (h *handlers) callListRepos(ctx context.Context) ([]domain.Repo, *mcp.CallToolResult, error) {
 	res, out, err := h.listRepos(ctx, nil, ListReposArgs{})
 	return out.Repos, res, err
+}
+
+func (h *handlers) callReconcile(ctx context.Context) (ReconcileResult, *mcp.CallToolResult, error) {
+	res, out, err := h.reconcile(ctx, nil, ReconcileArgs{})
+	return out, res, err
+}
+
+func (h *handlers) callRegisterRepo(ctx context.Context, args RegisterRepoArgs) (*domain.Repo, *mcp.CallToolResult, error) {
+	res, out, err := h.registerRepo(ctx, nil, args)
+	return out, res, err
+}
+
+func (h *handlers) callUnregisterRepo(ctx context.Context, args UnregisterRepoArgs) (UnregisterResult, *mcp.CallToolResult, error) {
+	res, out, err := h.unregisterRepo(ctx, nil, args)
+	return out, res, err
+}
+
+func (h *handlers) callPruneRepos(ctx context.Context, args PruneReposArgs) (PruneReposResult, *mcp.CallToolResult, error) {
+	res, out, err := h.pruneRepos(ctx, nil, args)
+	return out, res, err
 }
