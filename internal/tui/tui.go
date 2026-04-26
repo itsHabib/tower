@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,9 @@ import (
 	"github.com/itsHabib/tower/internal/store"
 	"github.com/itsHabib/tower/internal/workflow"
 )
+
+// AutoRefreshInterval is how often the TUI re-syncs in the background.
+const AutoRefreshInterval = 60 * time.Second
 
 // Run starts the TUI bound to the given workflow service and store.
 // Blocks until the user quits.
@@ -68,12 +72,20 @@ func newModel(ctx context.Context, wf *workflow.Service, s store.Store) *Model {
 
 // Init paints whatever is cached in the store immediately, then kicks
 // off a background sync so PR/CI data flows in without user input.
+// Schedules a periodic refresh tick.
 func (m *Model) Init() tea.Cmd {
 	m.syncing = true
 	return tea.Batch(
 		loadCmd(m.ctx, m.workflow, m.store),
 		syncCmd(m.ctx, m.workflow),
+		tickCmd(AutoRefreshInterval),
 	)
+}
+
+type tickMsg time.Time
+
+func tickCmd(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 type loadedMsg struct {
@@ -111,7 +123,34 @@ func loadCmd(ctx context.Context, wf *workflow.Service, s store.Store) tea.Cmd {
 			r.priority = RowPriority(r.wt, r.pr, r.reviews, r.checks)
 			rows = append(rows, r)
 		}
+		SortRows(rows, SortAttention)
 		return loadedMsg{rows: rows, noRepos: len(repos) == 0}
+	}
+}
+
+// SortRows orders rows in place by the given mode. Group order in the
+// grouped view is independent — this only affects within-group order
+// (and the entire ordering in flat view).
+func SortRows(rows []worktreeRow, mode SortMode) {
+	switch mode {
+	case SortAttention:
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].priority != rows[j].priority {
+				return rows[i].priority > rows[j].priority
+			}
+			return rows[i].wt.LastSeen.After(rows[j].wt.LastSeen)
+		})
+	case SortActivity:
+		sort.SliceStable(rows, func(i, j int) bool {
+			return rows[i].wt.LastSeen.After(rows[j].wt.LastSeen)
+		})
+	case SortName:
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].wt.Repo != rows[j].wt.Repo {
+				return rows[i].wt.Repo < rows[j].wt.Repo
+			}
+			return rows[i].wt.Branch < rows[j].wt.Branch
+		})
 	}
 }
 
@@ -176,6 +215,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		}
 		return m, loadCmd(m.ctx, m.workflow, m.store)
+	case tickMsg:
+		next := tickCmd(AutoRefreshInterval)
+		if m.syncing {
+			return m, next
+		}
+		m.syncing = true
+		return m, tea.Batch(syncCmd(m.ctx, m.workflow), next)
 	}
 	return m, nil
 }

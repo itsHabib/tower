@@ -74,6 +74,56 @@ func latestPerReviewer(reviews []domain.Review) map[string]domain.ReviewState {
 	return out
 }
 
+// SortMode controls the order of rows in the board.
+type SortMode int
+
+// Sort modes.
+const (
+	SortAttention SortMode = iota // priority desc, then last seen desc
+	SortActivity                  // last seen desc only
+	SortName                      // repo asc, branch asc
+)
+
+// ParseSortMode maps a CLI string to a SortMode. Empty defaults to SortAttention.
+func ParseSortMode(s string) (SortMode, error) {
+	switch s {
+	case "", "attention":
+		return SortAttention, nil
+	case "activity":
+		return SortActivity, nil
+	case "name":
+		return SortName, nil
+	default:
+		return 0, fmt.Errorf("unknown sort mode %q (want: attention, activity, name)", s)
+	}
+}
+
+// RowData is the public shape of one worktree row, used by callers
+// outside this package (cmd/tower) that want to render their own tables.
+type RowData struct {
+	Worktree domain.Worktree
+	PR       *domain.PullRequest
+	Reviews  []domain.Review
+	Checks   []domain.CICheck
+	Priority Priority
+}
+
+// SortRowData orders RowData in place according to mode.
+func SortRowData(rows []RowData, mode SortMode) {
+	internal := make([]worktreeRow, len(rows))
+	for i, r := range rows {
+		internal[i] = worktreeRow{
+			wt: r.Worktree, pr: r.PR, reviews: r.Reviews, checks: r.Checks, priority: r.Priority,
+		}
+	}
+	SortRows(internal, mode)
+	for i, r := range internal {
+		rows[i] = RowData{
+			Worktree: r.wt, PR: r.pr, Reviews: r.reviews, Checks: r.checks, Priority: r.priority,
+		}
+	}
+}
+
 // SummarizeChecks renders a one-line summary of CI check outcomes.
 func SummarizeChecks(checks []domain.CICheck) string {
 	if len(checks) == 0 {

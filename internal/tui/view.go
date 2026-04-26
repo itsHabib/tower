@@ -37,7 +37,7 @@ func (m *Model) viewHeader() string {
 	if m.mode == ViewFlat {
 		mode = "flat"
 	}
-	hint := dimStyle.Render(fmt.Sprintf("[q] quit  [s] sync  [r] reload  [g] %s view  [↑/↓] move  [enter] open", mode))
+	hint := dimStyle.Render(fmt.Sprintf("[q] quit  [s] sync  [r] reload  [g] %s view  [↑/↓] move  [enter] open  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
 	syncState := ""
 	if m.syncing {
 		syncState = pendingStyle.Render("◯ syncing…")

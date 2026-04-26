@@ -187,7 +187,12 @@ func cmdLs(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	noReconcile := fs.Bool("no-reconcile", false, "skip the git reconcile pass before listing")
 	flat := fs.Bool("flat", false, "list every worktree in one table with a REPO column (default groups by repo)")
+	sortFlag := fs.String("sort", "attention", "row order: attention | activity | name")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	mode, err := tui.ParseSortMode(*sortFlag)
+	if err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -213,20 +218,20 @@ func cmdLs(args []string) error {
 		return nil
 	}
 	if *flat {
-		return printFlat(ctx, c)
+		return printFlat(ctx, c, mode)
 	}
 	for i, repo := range repos {
 		if i > 0 {
 			fmt.Println()
 		}
-		if err := printRepoSection(ctx, c, repo); err != nil {
+		if err := printRepoSection(ctx, c, repo, mode); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func printFlat(ctx context.Context, c *cliCtx) error {
+func printFlat(ctx context.Context, c *cliCtx, mode tui.SortMode) error {
 	worktrees, err := c.workflow.ListWorktrees(ctx)
 	if err != nil {
 		return err
@@ -235,32 +240,30 @@ func printFlat(ctx context.Context, c *cliCtx) error {
 		fmt.Println("(no worktrees)")
 		return nil
 	}
+	rows, err := buildRows(ctx, c, worktrees)
+	if err != nil {
+		return err
+	}
+	tui.SortRowData(rows, mode)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if _, err := fmt.Fprintln(w, "REPO\tBRANCH\tDIRTY\tA/B\tPR\tCI\tLAST\tPATH"); err != nil {
 		return err
 	}
-	for _, wt := range worktrees {
-		if err := writeFlatRow(ctx, w, c, wt); err != nil {
+	for _, r := range rows {
+		if err := writeFlatRowData(w, r); err != nil {
 			return err
 		}
 	}
 	return w.Flush()
 }
 
-func writeFlatRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Worktree) error {
-	pr, err := c.store.GetPullRequest(ctx, wt.Repo, wt.Branch)
-	if err != nil {
-		return err
-	}
+func writeFlatRowData(w io.Writer, r tui.RowData) error {
+	wt := r.Worktree
 	prStr := "-"
 	ciStr := "-"
-	if pr != nil {
-		prStr = fmt.Sprintf("#%d %s", pr.Number, pr.State)
-		checks, err := c.store.ListCIChecks(ctx, wt.Repo, pr.Number)
-		if err != nil {
-			return err
-		}
-		ciStr = tui.SummarizeChecks(checks)
+	if r.PR != nil {
+		prStr = fmt.Sprintf("#%d %s", r.PR.Number, r.PR.State)
+		ciStr = tui.SummarizeChecks(r.Checks)
 	}
 	dirty := "-"
 	if wt.Dirty {
@@ -268,12 +271,12 @@ func writeFlatRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Worktre
 	}
 	ab := fmt.Sprintf("%d/%d", wt.Ahead, wt.Behind)
 	last := lastSummary(wt)
-	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 		wt.Repo, wt.Branch, dirty, ab, prStr, ciStr, last, wt.Path)
 	return err
 }
 
-func printRepoSection(ctx context.Context, c *cliCtx, repo domain.Repo) error {
+func printRepoSection(ctx context.Context, c *cliCtx, repo domain.Repo, mode tui.SortMode) error {
 	fmt.Println(repo.Name)
 	worktrees, err := c.store.ListWorktreesForRepo(ctx, repo.Name)
 	if err != nil {
@@ -283,32 +286,60 @@ func printRepoSection(ctx context.Context, c *cliCtx, repo domain.Repo) error {
 		fmt.Println("  (no worktrees)")
 		return nil
 	}
+	rows, err := buildRows(ctx, c, worktrees)
+	if err != nil {
+		return err
+	}
+	tui.SortRowData(rows, mode)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if _, err := fmt.Fprintln(w, "  BRANCH\tDIRTY\tA/B\tPR\tCI\tLAST\tPATH"); err != nil {
 		return err
 	}
-	for _, wt := range worktrees {
-		if err := writeWorktreeRow(ctx, w, c, wt); err != nil {
+	for _, r := range rows {
+		if err := writeWorktreeRowData(w, r); err != nil {
 			return err
 		}
 	}
 	return w.Flush()
 }
 
-func writeWorktreeRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Worktree) error {
-	pr, err := c.store.GetPullRequest(ctx, wt.Repo, wt.Branch)
-	if err != nil {
-		return err
+// buildRows hydrates each worktree with its PR, reviews, and checks.
+func buildRows(ctx context.Context, c *cliCtx, worktrees []domain.Worktree) ([]tui.RowData, error) {
+	rows := make([]tui.RowData, 0, len(worktrees))
+	for _, wt := range worktrees {
+		pr, err := c.store.GetPullRequest(ctx, wt.Repo, wt.Branch)
+		if err != nil {
+			return nil, err
+		}
+		var (
+			reviews []domain.Review
+			checks  []domain.CICheck
+		)
+		if pr != nil {
+			reviews, err = c.store.ListReviews(ctx, wt.Repo, pr.Number)
+			if err != nil {
+				return nil, err
+			}
+			checks, err = c.store.ListCIChecks(ctx, wt.Repo, pr.Number)
+			if err != nil {
+				return nil, err
+			}
+		}
+		rows = append(rows, tui.RowData{
+			Worktree: wt, PR: pr, Reviews: reviews, Checks: checks,
+			Priority: tui.RowPriority(wt, pr, reviews, checks),
+		})
 	}
+	return rows, nil
+}
+
+func writeWorktreeRowData(w io.Writer, r tui.RowData) error {
+	wt := r.Worktree
 	prStr := "-"
 	ciStr := "-"
-	if pr != nil {
-		prStr = fmt.Sprintf("#%d %s", pr.Number, pr.State)
-		checks, err := c.store.ListCIChecks(ctx, wt.Repo, pr.Number)
-		if err != nil {
-			return err
-		}
-		ciStr = tui.SummarizeChecks(checks)
+	if r.PR != nil {
+		prStr = fmt.Sprintf("#%d %s", r.PR.Number, r.PR.State)
+		ciStr = tui.SummarizeChecks(r.Checks)
 	}
 	dirty := "-"
 	if wt.Dirty {
@@ -316,7 +347,7 @@ func writeWorktreeRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Wor
 	}
 	ab := fmt.Sprintf("%d/%d", wt.Ahead, wt.Behind)
 	last := lastSummary(wt)
-	_, err = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+	_, err := fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 		wt.Branch, dirty, ab, prStr, ciStr, last, wt.Path)
 	return err
 }

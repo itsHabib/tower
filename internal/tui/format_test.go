@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itsHabib/tower/internal/domain"
 )
@@ -65,5 +66,58 @@ func TestPadRight(t *testing.T) {
 	}
 	if got := padRight("abcdef", 3); got != "abcdef" {
 		t.Errorf("padRight no shrink: %q", got)
+	}
+}
+
+func TestParseSortMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want SortMode
+		err  bool
+	}{
+		{"", SortAttention, false},
+		{"attention", SortAttention, false},
+		{"activity", SortActivity, false},
+		{"name", SortName, false},
+		{"weird", 0, true},
+	}
+	for _, c := range cases {
+		got, err := ParseSortMode(c.in)
+		if (err != nil) != c.err {
+			t.Errorf("%q: err=%v want_err=%v", c.in, err, c.err)
+		}
+		if !c.err && got != c.want {
+			t.Errorf("%q: got %v want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRowPriority(t *testing.T) {
+	now := time.Now()
+	wt := domain.Worktree{Branch: "tower/x", LastSeen: now}
+	pr := &domain.PullRequest{Number: 1, State: domain.PRStateOpen}
+
+	if RowPriority(wt, nil, nil, nil) != PriorityNone {
+		t.Error("clean worktree should be PriorityNone")
+	}
+
+	wt.Dirty = true
+	if RowPriority(wt, nil, nil, nil) != PriorityDirty {
+		t.Error("dirty worktree should be PriorityDirty")
+	}
+	wt.Dirty = false
+
+	if RowPriority(wt, pr, nil, nil) != PriorityReviewWaiting {
+		t.Error("open PR with no reviews should be PriorityReviewWaiting")
+	}
+
+	reviews := []domain.Review{{Reviewer: "claude", State: domain.ReviewChangesRequested}}
+	if RowPriority(wt, pr, reviews, nil) != PriorityChangesRequested {
+		t.Error("changes-requested review should be PriorityChangesRequested")
+	}
+
+	checks := []domain.CICheck{{Name: "test", Conclusion: domain.CIFailure}}
+	if RowPriority(wt, pr, reviews, checks) != PriorityCIFail {
+		t.Error("CI failure should outrank everything")
 	}
 }
