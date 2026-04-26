@@ -34,6 +34,8 @@ func run(args []string) error {
 		return cmdSync(rest)
 	case "reconcile":
 		return cmdReconcile(rest)
+	case "repo":
+		return cmdRepo(rest)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -54,19 +56,22 @@ func openTUI() error {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, `tower — manage parallel git worktrees
+	fmt.Fprintln(os.Stderr, `tower — manage parallel git worktrees across N repos
 
 usage: tower <command> [args...]
 
-commands:
-  add <name>       create a worktree at .worktrees/<name> on branch tower/<name>
-                   (a name with a slash is used as the full branch ref)
-  rm <name>        tear down the worktree for the named branch
-  ls               list tracked worktrees with status
-  open <name>      print worktree path (use: cd $(tower open <name>))
-  sync             reconcile from git + refresh PR / review / CI from GitHub
-  reconcile        reconcile from git only (no network)
-  help             this message
+worktree commands:
+  add <name>            create a worktree (uses cwd's repo, or --repo)
+  rm <name>             tear down a worktree (--repo if name is ambiguous)
+  ls                    list all worktrees, grouped by repo
+  open <name>           print worktree path (--repo if ambiguous)
+  sync                  reconcile from git + refresh PR/CI from GitHub
+  reconcile             reconcile from git only (no network)
+
+repo commands:
+  repo add [path]       register a repo (defaults to cwd)
+  repo ls               list registered repos
+  repo rm <name>        unregister a repo
 
 run with no args to open the TUI.`)
 }

@@ -1,5 +1,6 @@
-// Package refresh keeps the local store in sync with reality: live git
-// worktrees and the GitHub state attached to each branch.
+// Package refresh keeps the local store in sync with reality across all
+// registered repos: live git worktrees and the GitHub state attached to
+// each branch.
 package refresh
 
 import (
@@ -12,27 +13,46 @@ import (
 	"github.com/itsHabib/tower/internal/store"
 )
 
+// GitFactory returns a Git observer rooted at the given repo path.
+type GitFactory func(repoPath string) observe.Git
+
+// GHFactory returns a GH observer rooted at the given repo path.
+type GHFactory func(repoPath string) observe.GH
+
 // Service syncs the store from git (worktrees) and gh (PR/review/CI).
 type Service struct {
 	Store store.Store
-	Git   observe.Git
-	GH    observe.GH
+	Git   GitFactory
+	GH    GHFactory
 	now   func() time.Time
 }
 
 // New constructs a Service.
-func New(s store.Store, git observe.Git, gh observe.GH) *Service {
+func New(s store.Store, git GitFactory, gh GHFactory) *Service {
 	return &Service{
 		Store: s, Git: git, GH: gh,
 		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
-// Reconcile syncs the worktree set from git into the store. Worktrees
-// not in the live list are deleted; new ones are inserted with full
-// per-worktree state (dirty, ahead/behind, last commit).
+// Reconcile syncs the worktree set across every registered repo.
 func (s *Service) Reconcile(ctx context.Context) error {
-	live, err := s.Git.Worktrees(ctx)
+	repos, err := s.Store.ListRepos(ctx)
+	if err != nil {
+		return fmt.Errorf("list repos: %w", err)
+	}
+	for _, r := range repos {
+		if err := s.ReconcileRepo(ctx, r); err != nil {
+			return fmt.Errorf("reconcile %s: %w", r.Name, err)
+		}
+	}
+	return nil
+}
+
+// ReconcileRepo syncs the worktree set for one repo.
+func (s *Service) ReconcileRepo(ctx context.Context, repo domain.Repo) error {
+	git := s.Git(repo.Path)
+	live, err := git.Worktrees(ctx)
 	if err != nil {
 		return fmt.Errorf("worktrees: %w", err)
 	}
@@ -42,11 +62,11 @@ func (s *Service) Reconcile(ctx context.Context) error {
 			continue
 		}
 		seen[lw.Branch] = true
-		if err := s.upsertLive(ctx, lw); err != nil {
+		if err := s.upsertLive(ctx, repo, git, lw); err != nil {
 			return err
 		}
 	}
-	stored, err := s.Store.ListWorktrees(ctx)
+	stored, err := s.Store.ListWorktreesForRepo(ctx, repo.Name)
 	if err != nil {
 		return fmt.Errorf("list stored: %w", err)
 	}
@@ -54,21 +74,22 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		if seen[sw.Branch] {
 			continue
 		}
-		if err := s.Store.DeleteWorktree(ctx, sw.Branch); err != nil {
+		if err := s.Store.DeleteWorktree(ctx, repo.Name, sw.Branch); err != nil {
 			return fmt.Errorf("delete stale %s: %w", sw.Branch, err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) upsertLive(ctx context.Context, lw observe.Worktree) error {
-	existing, err := s.Store.GetWorktree(ctx, lw.Branch)
+func (s *Service) upsertLive(ctx context.Context, repo domain.Repo, git observe.Git, lw observe.Worktree) error {
+	existing, err := s.Store.GetWorktree(ctx, repo.Name, lw.Branch)
 	if err != nil {
-		return fmt.Errorf("get %s: %w", lw.Branch, err)
+		return fmt.Errorf("get %s/%s: %w", repo.Name, lw.Branch, err)
 	}
-	enriched := s.enrich(ctx, lw.Path)
+	enriched := s.enrich(ctx, git, lw.Path)
 	now := s.now()
 	w := domain.Worktree{
+		Repo:       repo.Name,
 		Branch:     lw.Branch,
 		Path:       lw.Path,
 		HEAD:       lw.HEAD,
@@ -97,49 +118,60 @@ type enriched struct {
 
 // enrich gathers per-worktree state. Each call is best-effort; failures
 // fall back to the zero value rather than aborting the whole reconcile.
-func (s *Service) enrich(ctx context.Context, path string) enriched {
+func (s *Service) enrich(ctx context.Context, git observe.Git, path string) enriched {
 	var e enriched
-	if d, err := s.Git.Dirty(ctx, path); err == nil {
+	if d, err := git.Dirty(ctx, path); err == nil {
 		e.dirty = d
 	}
-	if a, b, err := s.Git.AheadBehind(ctx, path); err == nil {
+	if a, b, err := git.AheadBehind(ctx, path); err == nil {
 		e.ahead, e.behind = a, b
 	}
-	if t, sub, err := s.Git.LastCommit(ctx, path); err == nil {
+	if t, sub, err := git.LastCommit(ctx, path); err == nil {
 		e.lastCommit, e.title = t, sub
 	}
 	return e
 }
 
-// Branch fetches the PR, reviews, and CI checks for one branch and
-// persists them. Returns nil if the branch has no PR yet.
-func (s *Service) Branch(ctx context.Context, branch string) error {
-	pr, err := s.GH.PullRequestForBranch(ctx, branch)
+// Branch fetches the PR, reviews, and CI checks for one branch in a
+// repo and persists them. Returns nil if the branch has no PR yet.
+func (s *Service) Branch(ctx context.Context, repoName, branch string) error {
+	repo, err := s.Store.GetRepo(ctx, repoName)
 	if err != nil {
-		return fmt.Errorf("pr for %s: %w", branch, err)
+		return fmt.Errorf("get repo: %w", err)
+	}
+	if repo == nil {
+		return fmt.Errorf("repo not registered: %s", repoName)
+	}
+	gh := s.GH(repo.Path)
+	pr, err := gh.PullRequestForBranch(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("pr for %s/%s: %w", repoName, branch, err)
 	}
 	if pr == nil {
 		return nil
 	}
+	pr.Repo = repoName
 	pr.Branch = branch
 	if err := s.Store.SetPullRequest(ctx, *pr); err != nil {
 		return fmt.Errorf("set pr: %w", err)
 	}
-	reviews, err := s.GH.Reviews(ctx, pr.Number)
+	reviews, err := gh.Reviews(ctx, pr.Number)
 	if err != nil {
 		return fmt.Errorf("reviews: %w", err)
 	}
-	for _, r := range reviews {
-		if err := s.Store.UpsertReview(ctx, r); err != nil {
+	for i := range reviews {
+		reviews[i].Repo = repoName
+		if err := s.Store.UpsertReview(ctx, reviews[i]); err != nil {
 			return fmt.Errorf("upsert review: %w", err)
 		}
 	}
-	checks, err := s.GH.Checks(ctx, pr.Number)
+	checks, err := gh.Checks(ctx, pr.Number)
 	if err != nil {
 		return fmt.Errorf("checks: %w", err)
 	}
-	for _, c := range checks {
-		if err := s.Store.UpsertCICheck(ctx, c); err != nil {
+	for i := range checks {
+		checks[i].Repo = repoName
+		if err := s.Store.UpsertCICheck(ctx, checks[i]); err != nil {
 			return fmt.Errorf("upsert check: %w", err)
 		}
 	}
@@ -152,8 +184,8 @@ type AllResult struct {
 	Errors map[string]error
 }
 
-// All reconciles git state and then refreshes GitHub state for every
-// known worktree. Per-branch errors land in the result, not the return.
+// All reconciles git state and refreshes GitHub state for every worktree
+// across every registered repo. Per-branch errors land in the result.
 func (s *Service) All(ctx context.Context) (AllResult, error) {
 	if err := s.Reconcile(ctx); err != nil {
 		return AllResult{}, fmt.Errorf("reconcile: %w", err)
@@ -164,8 +196,9 @@ func (s *Service) All(ctx context.Context) (AllResult, error) {
 	}
 	res := AllResult{Errors: make(map[string]error)}
 	for _, w := range worktrees {
-		if err := s.Branch(ctx, w.Branch); err != nil {
-			res.Errors[w.Branch] = err
+		key := w.Repo + "/" + w.Branch
+		if err := s.Branch(ctx, w.Repo, w.Branch); err != nil {
+			res.Errors[key] = err
 			continue
 		}
 		res.Synced++

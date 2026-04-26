@@ -1,11 +1,19 @@
-// Package domain holds the core types tower tracks: worktrees and the
-// pull-request, review, and CI state they accumulate.
+// Package domain holds the core types tower tracks: repos, worktrees,
+// and the pull-request, review, and CI state attached to each branch.
 package domain
 
 import "time"
 
-// Worktree is one git worktree as tower sees it. Identity is the branch.
+// Repo is a registered git repository tower watches.
+type Repo struct {
+	Name      string
+	Path      string
+	CreatedAt time.Time
+}
+
+// Worktree is one git worktree as tower sees it. Identity is (Repo, Branch).
 type Worktree struct {
+	Repo       string
 	Branch     string
 	Path       string
 	HEAD       string
@@ -28,8 +36,9 @@ const (
 	PRStateMerged PRState = "merged"
 )
 
-// PullRequest is the latest known state of the PR opened for a branch.
+// PullRequest is the latest known state of the PR opened for a branch in a repo.
 type PullRequest struct {
+	Repo      string
 	Branch    string
 	Number    int
 	URL       string
@@ -52,6 +61,7 @@ const (
 
 // Review is one review left by a human or agent on a pull request.
 type Review struct {
+	Repo      string
 	PRNumber  int
 	Reviewer  string
 	State     ReviewState
@@ -73,6 +83,7 @@ const (
 
 // CICheck is the latest known state of a single CI check on a pull request.
 type CICheck struct {
+	Repo       string
 	PRNumber   int
 	Name       string
 	Conclusion CIConclusion

@@ -15,25 +15,18 @@ import (
 )
 
 type cliCtx struct {
-	repo     string
 	store    store.Store
 	workflow *workflow.Service
 }
 
-// setup wires the store, observers, and workflow service. The state DB
-// always lives in the main worktree's .tower/, regardless of which
-// worktree the user invoked tower from.
+// setup wires the global store, observers, and workflow service. State
+// lives at <user-config-dir>/tower/state.db and is shared across every
+// repo tower tracks.
 func setup(ctx context.Context) (*cliCtx, func(), error) {
-	cwdRepo, err := repoTopLevel(ctx)
+	dbPath, err := stateDBPath()
 	if err != nil {
 		return nil, nil, err
 	}
-	git := observe.NewGit(cwdRepo)
-	mainRoot, err := git.MainRoot(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("locate main worktree: %w", err)
-	}
-	dbPath := filepath.Join(mainRoot, ".tower", "state.db")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("create state dir: %w", err)
 	}
@@ -41,15 +34,24 @@ func setup(ctx context.Context) (*cliCtx, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open store: %w", err)
 	}
-	mainGit := observe.NewGit(mainRoot)
-	gh := observe.NewGH(mainRoot)
-	ref := refresh.New(s, mainGit, gh)
-	wf := workflow.New(workflow.Config{Repo: mainRoot}, s, mainGit, ref)
+	gitFactory := func(repoPath string) observe.Git { return observe.NewGit(repoPath) }
+	ghFactory := func(repoPath string) observe.GH { return observe.NewGH(repoPath) }
+	ref := refresh.New(s, gitFactory, ghFactory)
+	wf := workflow.New(workflow.Config{}, s, gitFactory, ref)
 	cleanup := func() { _ = s.Close() }
-	return &cliCtx{repo: mainRoot, store: s, workflow: wf}, cleanup, nil
+	return &cliCtx{store: s, workflow: wf}, cleanup, nil
 }
 
-func repoTopLevel(ctx context.Context) (string, error) {
+func stateDBPath() (string, error) {
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("user config dir: %w", err)
+	}
+	return filepath.Join(cfg, "tower", "state.db"), nil
+}
+
+// gitTopLevel runs `git rev-parse --show-toplevel` from cwd.
+func gitTopLevel(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)

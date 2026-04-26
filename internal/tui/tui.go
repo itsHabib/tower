@@ -28,6 +28,15 @@ func Run(ctx context.Context, wf *workflow.Service, s store.Store) error {
 	return nil
 }
 
+// ViewMode toggles between grouped-by-repo and flat list.
+type ViewMode int
+
+// View modes.
+const (
+	ViewGrouped ViewMode = iota
+	ViewFlat
+)
+
 // Model is the bubbletea model for the worktree board view.
 type Model struct {
 	ctx        context.Context
@@ -35,6 +44,7 @@ type Model struct {
 	store      store.Store
 	rows       []worktreeRow
 	cursor     int
+	mode       ViewMode
 	syncing    bool
 	lastSync   time.Time
 	err        error
@@ -94,22 +104,22 @@ func loadCmd(ctx context.Context, s store.Store) tea.Cmd {
 
 func loadRow(ctx context.Context, s store.Store, wt domain.Worktree) (worktreeRow, error) {
 	r := worktreeRow{wt: wt}
-	pr, err := s.GetPullRequest(ctx, wt.Branch)
+	pr, err := s.GetPullRequest(ctx, wt.Repo, wt.Branch)
 	if err != nil {
-		return r, fmt.Errorf("pr %s: %w", wt.Branch, err)
+		return r, fmt.Errorf("pr %s/%s: %w", wt.Repo, wt.Branch, err)
 	}
 	r.pr = pr
 	if pr == nil {
 		return r, nil
 	}
-	revs, err := s.ListReviews(ctx, pr.Number)
+	revs, err := s.ListReviews(ctx, wt.Repo, pr.Number)
 	if err != nil {
-		return r, fmt.Errorf("reviews %d: %w", pr.Number, err)
+		return r, fmt.Errorf("reviews %s/#%d: %w", wt.Repo, pr.Number, err)
 	}
 	r.reviews = revs
-	checks, err := s.ListCIChecks(ctx, pr.Number)
+	checks, err := s.ListCIChecks(ctx, wt.Repo, pr.Number)
 	if err != nil {
-		return r, fmt.Errorf("checks %d: %w", pr.Number, err)
+		return r, fmt.Errorf("checks %s/#%d: %w", wt.Repo, pr.Number, err)
 	}
 	r.checks = checks
 	return r, nil
@@ -175,6 +185,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		return m, tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.store))
+	case "g":
+		if m.mode == ViewGrouped {
+			m.mode = ViewFlat
+		} else {
+			m.mode = ViewGrouped
+		}
 	case "enter":
 		if len(m.rows) > 0 {
 			m.openOnExit = m.rows[m.cursor].wt.Path

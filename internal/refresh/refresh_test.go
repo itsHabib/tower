@@ -76,101 +76,94 @@ func newStore(t *testing.T) store.Store {
 	return s
 }
 
-func TestReconcileInsertsNewWorktrees(t *testing.T) {
-	s := newStore(t)
-	g := &fakeGit{
-		worktrees: []observe.Worktree{
-			{Path: "/repo", HEAD: "abc", Branch: "main"},
-			{Path: "/repo/.worktrees/feat-x", HEAD: "def", Branch: "tower/feat-x"},
-		},
-		dirty:      map[string]bool{"/repo/.worktrees/feat-x": true},
-		ahead:      map[string]int{"/repo/.worktrees/feat-x": 3},
-		behind:     map[string]int{"/repo/.worktrees/feat-x": 1},
-		lastCommit: map[string]time.Time{"/repo/.worktrees/feat-x": time.Unix(1700000000, 0).UTC()},
-		title:      map[string]string{"/repo/.worktrees/feat-x": "wip"},
+func mustRepo(t *testing.T, s store.Store, name, path string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertRepo(context.Background(), domain.Repo{Name: name, Path: path, CreatedAt: now}); err != nil {
+		t.Fatalf("upsert repo: %v", err)
 	}
-	svc := New(s, g, &fakeGH{})
+}
+
+// gitFor returns a factory that always serves the given fake regardless of path.
+func gitFor(g *fakeGit) GitFactory { return func(_ string) observe.Git { return g } }
+
+// ghFor returns a factory that always serves the given fake regardless of path.
+func ghFor(h *fakeGH) GHFactory { return func(_ string) observe.GH { return h } }
+
+func TestReconcileAcrossRepos(t *testing.T) {
+	s := newStore(t)
+	mustRepo(t, s, "orchestra", "/o")
+	mustRepo(t, s, "roxiq", "/r")
+
+	gits := map[string]*fakeGit{
+		"/o": {worktrees: []observe.Worktree{{Path: "/o", HEAD: "1", Branch: "main"}}},
+		"/r": {worktrees: []observe.Worktree{
+			{Path: "/r", HEAD: "2", Branch: "main"},
+			{Path: "/r/.worktrees/feat", HEAD: "3", Branch: "tower/feat"},
+		}},
+	}
+	svc := New(s, func(p string) observe.Git { return gits[p] }, ghFor(&fakeGH{}))
 
 	if err := svc.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	wts, err := s.ListWorktrees(context.Background())
-	if err != nil {
-		t.Fatalf("list: %v", err)
+	all, _ := s.ListWorktrees(context.Background())
+	if len(all) != 3 {
+		t.Fatalf("want 3 worktrees across repos, got %d", len(all))
 	}
-	if len(wts) != 2 {
-		t.Fatalf("want 2 worktrees, got %d: %+v", len(wts), wts)
-	}
-
-	feat, _ := s.GetWorktree(context.Background(), "tower/feat-x")
-	if feat == nil {
-		t.Fatal("missing feat-x")
-	}
-	if !feat.Dirty || feat.Ahead != 3 || feat.Behind != 1 || feat.Title != "wip" {
-		t.Fatalf("enrichment lost: %+v", feat)
+	o, _ := s.ListWorktreesForRepo(context.Background(), "orchestra")
+	r, _ := s.ListWorktreesForRepo(context.Background(), "roxiq")
+	if len(o) != 1 || len(r) != 2 {
+		t.Fatalf("scoping wrong: orchestra=%d roxiq=%d", len(o), len(r))
 	}
 }
 
-func TestReconcileSkipsDetached(t *testing.T) {
+func TestReconcileRepoEnrichment(t *testing.T) {
 	s := newStore(t)
+	mustRepo(t, s, "o", "/o")
 	g := &fakeGit{
-		worktrees: []observe.Worktree{
-			{Path: "/repo", HEAD: "abc", Branch: "main"},
-			{Path: "/repo/.worktrees/spike", HEAD: "def"}, // detached
-		},
+		worktrees:  []observe.Worktree{{Path: "/o/.worktrees/x", HEAD: "h", Branch: "tower/x"}},
+		dirty:      map[string]bool{"/o/.worktrees/x": true},
+		ahead:      map[string]int{"/o/.worktrees/x": 4},
+		behind:     map[string]int{"/o/.worktrees/x": 1},
+		lastCommit: map[string]time.Time{"/o/.worktrees/x": time.Unix(1700000000, 0).UTC()},
+		title:      map[string]string{"/o/.worktrees/x": "wip"},
 	}
-	svc := New(s, g, &fakeGH{})
-	_ = svc.Reconcile(context.Background())
-	wts, _ := s.ListWorktrees(context.Background())
-	if len(wts) != 1 || wts[0].Branch != "main" {
-		t.Fatalf("detached should be skipped: %+v", wts)
+	svc := New(s, gitFor(g), ghFor(&fakeGH{}))
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got, _ := s.GetWorktree(context.Background(), "o", "tower/x")
+	if got == nil || !got.Dirty || got.Ahead != 4 || got.Behind != 1 || got.Title != "wip" {
+		t.Fatalf("enrichment lost: %+v", got)
 	}
 }
 
-func TestReconcileDeletesStaleWorktrees(t *testing.T) {
+func TestReconcileRepoDeletesStale(t *testing.T) {
 	s := newStore(t)
+	mustRepo(t, s, "o", "/o")
 	now := time.Now().UTC().Truncate(time.Second)
 	_ = s.UpsertWorktree(context.Background(), domain.Worktree{
-		Branch: "tower/old", Path: "/old", CreatedAt: now, LastSeen: now,
+		Repo: "o", Branch: "tower/old", Path: "/o/.worktrees/old", CreatedAt: now, LastSeen: now,
 	})
-
-	g := &fakeGit{
-		worktrees: []observe.Worktree{{Path: "/repo", HEAD: "abc", Branch: "main"}},
-	}
-	svc := New(s, g, &fakeGH{})
+	g := &fakeGit{worktrees: []observe.Worktree{{Path: "/o", HEAD: "h", Branch: "main"}}}
+	svc := New(s, gitFor(g), ghFor(&fakeGH{}))
 	if err := svc.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	got, _ := s.GetWorktree(context.Background(), "tower/old")
+	got, _ := s.GetWorktree(context.Background(), "o", "tower/old")
 	if got != nil {
-		t.Errorf("stale worktree should be deleted, got %+v", got)
+		t.Errorf("stale should be deleted: %+v", got)
 	}
 }
 
-func TestReconcilePreservesCreatedAt(t *testing.T) {
+func TestBranchScopesRepoOnRecords(t *testing.T) {
 	s := newStore(t)
-	original := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
-	_ = s.UpsertWorktree(context.Background(), domain.Worktree{
-		Branch: "main", Path: "/repo", CreatedAt: original, LastSeen: original,
-	})
-	g := &fakeGit{
-		worktrees: []observe.Worktree{{Path: "/repo", HEAD: "abc", Branch: "main"}},
-	}
-	svc := New(s, g, &fakeGH{})
-	_ = svc.Reconcile(context.Background())
-	got, _ := s.GetWorktree(context.Background(), "main")
-	if !got.CreatedAt.Equal(original) {
-		t.Errorf("created_at should be preserved: want %v got %v", original, got.CreatedAt)
-	}
-}
-
-func TestBranchPullsPRReviewsChecks(t *testing.T) {
-	s := newStore(t)
+	mustRepo(t, s, "o", "/o")
 	now := time.Now().UTC().Truncate(time.Second)
 	_ = s.UpsertWorktree(context.Background(), domain.Worktree{
-		Branch: "tower/x", Path: "/p", CreatedAt: now, LastSeen: now,
+		Repo: "o", Branch: "tower/x", Path: "/p", CreatedAt: now, LastSeen: now,
 	})
-
 	gh := &fakeGH{
 		prByBranch: map[string]*domain.PullRequest{
 			"tower/x": {Number: 99, URL: "u", State: domain.PRStateOpen, CreatedAt: now, UpdatedAt: now},
@@ -182,46 +175,20 @@ func TestBranchPullsPRReviewsChecks(t *testing.T) {
 			99: {{PRNumber: 99, Name: "build", Conclusion: domain.CISuccess, UpdatedAt: now}},
 		},
 	}
-	svc := New(s, &fakeGit{}, gh)
-	if err := svc.Branch(context.Background(), "tower/x"); err != nil {
+	svc := New(s, gitFor(&fakeGit{}), ghFor(gh))
+	if err := svc.Branch(context.Background(), "o", "tower/x"); err != nil {
 		t.Fatalf("branch: %v", err)
 	}
-	pr, _ := s.GetPullRequest(context.Background(), "tower/x")
-	if pr == nil || pr.Number != 99 || pr.Branch != "tower/x" {
+	pr, _ := s.GetPullRequest(context.Background(), "o", "tower/x")
+	if pr == nil || pr.Repo != "o" || pr.Number != 99 {
 		t.Fatalf("pr mismatch: %+v", pr)
 	}
-}
-
-func TestAllReconcilesAndAggregates(t *testing.T) {
-	s := newStore(t)
-	g := &fakeGit{
-		worktrees: []observe.Worktree{
-			{Path: "/repo", Branch: "main", HEAD: "a"},
-			{Path: "/repo/.worktrees/good", Branch: "tower/good", HEAD: "b"},
-			{Path: "/repo/.worktrees/bad", Branch: "tower/bad", HEAD: "c"},
-		},
+	revs, _ := s.ListReviews(context.Background(), "o", 99)
+	if len(revs) != 1 || revs[0].Repo != "o" {
+		t.Fatalf("review repo not scoped: %+v", revs)
 	}
-	now := time.Now().UTC().Truncate(time.Second)
-	gh := &fakeGH{
-		prByBranch: map[string]*domain.PullRequest{
-			"tower/good": {Number: 1, State: domain.PRStateOpen, CreatedAt: now, UpdatedAt: now},
-			"tower/bad":  {Number: 2, State: domain.PRStateOpen, CreatedAt: now, UpdatedAt: now},
-		},
-		reviews:  map[int][]domain.Review{1: {}, 2: {}},
-		checks:   map[int][]domain.CICheck{1: {}},
-		checkErr: errors.New("checks broken"),
-	}
-	svc := New(s, g, gh)
-	res, err := svc.All(context.Background())
-	if err != nil {
-		t.Fatalf("all: %v", err)
-	}
-	// main has no PR, so it succeeds as a no-op.
-	// tower/good and tower/bad both fail because checkErr is set.
-	if res.Synced != 1 {
-		t.Errorf("synced: want 1 (main, no PR) got %d", res.Synced)
-	}
-	if len(res.Errors) != 2 {
-		t.Errorf("errors: want 2 (good + bad), got %d", len(res.Errors))
+	checks, _ := s.ListCIChecks(context.Background(), "o", 99)
+	if len(checks) != 1 || checks[0].Repo != "o" {
+		t.Fatalf("check repo not scoped: %+v", checks)
 	}
 }

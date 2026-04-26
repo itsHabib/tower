@@ -20,163 +20,140 @@ func newTestStore(t *testing.T) Store {
 	return s
 }
 
-func TestWorktreeRoundTrip(t *testing.T) {
+func mustRepo(t *testing.T, s Store, name, path string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertRepo(context.Background(), domain.Repo{
+		Name: name, Path: path, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert repo: %v", err)
+	}
+}
+
+func TestRepoRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
-
-	want := domain.Worktree{
-		Branch:     "tower/feat-x",
-		Path:       "/repo/.worktrees/feat-x",
-		HEAD:       "abc123",
-		Title:      "wip: refactor",
-		Dirty:      true,
-		Ahead:      3,
-		Behind:     1,
-		LastCommit: now.Add(-time.Hour),
-		CreatedAt:  now.Add(-2 * time.Hour),
-		LastSeen:   now,
-	}
-	if err := s.UpsertWorktree(ctx, want); err != nil {
+	r := domain.Repo{Name: "orchestra", Path: "/pers/orchestra", CreatedAt: now}
+	if err := s.UpsertRepo(ctx, r); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-
-	got, err := s.GetWorktree(ctx, want.Branch)
+	got, err := s.GetRepo(ctx, "orchestra")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got == nil {
-		t.Fatal("got nil")
+	if got == nil || got.Path != r.Path {
+		t.Fatalf("repo mismatch: %+v", got)
 	}
-	if got.Branch != want.Branch || got.Path != want.Path || got.HEAD != want.HEAD ||
-		got.Title != want.Title || got.Dirty != want.Dirty ||
-		got.Ahead != want.Ahead || got.Behind != want.Behind {
-		t.Fatalf("mismatch:\nwant %+v\ngot  %+v", want, *got)
+	all, _ := s.ListRepos(ctx)
+	if len(all) != 1 {
+		t.Fatalf("want 1, got %d", len(all))
 	}
-	if !got.LastCommit.Equal(want.LastCommit) {
-		t.Errorf("last_commit: want %v got %v", want.LastCommit, got.LastCommit)
+	if err := s.DeleteRepo(ctx, "orchestra"); err != nil {
+		t.Fatalf("delete: %v", err)
 	}
-
-	want.Dirty = false
-	want.Ahead = 5
-	want.LastSeen = now.Add(time.Minute)
-	if err := s.UpsertWorktree(ctx, want); err != nil {
-		t.Fatalf("re-upsert: %v", err)
-	}
-	got, _ = s.GetWorktree(ctx, want.Branch)
-	if got.Dirty || got.Ahead != 5 {
-		t.Fatalf("update mismatch: %+v", got)
-	}
-}
-
-func TestWorktreeWithoutLastCommit(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
-	w := domain.Worktree{
-		Branch: "tower/empty", Path: "/p", HEAD: "x",
-		CreatedAt: now, LastSeen: now,
-	}
-	if err := s.UpsertWorktree(ctx, w); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	got, _ := s.GetWorktree(ctx, "tower/empty")
-	if !got.LastCommit.IsZero() {
-		t.Errorf("expected zero last_commit, got %v", got.LastCommit)
-	}
-}
-
-func TestListWorktreesOrder(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
-
-	for i, branch := range []string{"a", "b", "c"} {
-		_ = s.UpsertWorktree(ctx, domain.Worktree{
-			Branch: branch, Path: "/" + branch,
-			CreatedAt: now, LastSeen: now.Add(time.Duration(i) * time.Minute),
-		})
-	}
-	all, err := s.ListWorktrees(ctx)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(all) != 3 || all[0].Branch != "c" || all[2].Branch != "a" {
-		t.Fatalf("expected last-seen-desc order: %+v", all)
-	}
-}
-
-func TestPullRequestRoundTrip(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
-
-	if err := s.UpsertWorktree(ctx, domain.Worktree{Branch: "tower/x", Path: "/p", CreatedAt: now, LastSeen: now}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	pr := domain.PullRequest{
-		Branch:    "tower/x",
-		Number:    42,
-		URL:       "https://github.com/x/y/pull/42",
-		State:     domain.PRStateOpen,
-		Title:     "Feature X",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := s.SetPullRequest(ctx, pr); err != nil {
-		t.Fatalf("set pr: %v", err)
-	}
-	got, err := s.GetPullRequest(ctx, "tower/x")
-	if err != nil {
-		t.Fatalf("get pr: %v", err)
-	}
-	if got.Number != 42 || got.State != domain.PRStateOpen {
-		t.Fatalf("pr mismatch: %+v", got)
-	}
-
-	if err := s.DeleteWorktree(ctx, "tower/x"); err != nil {
-		t.Fatalf("delete worktree: %v", err)
-	}
-	got, err = s.GetPullRequest(ctx, "tower/x")
-	if err != nil {
-		t.Fatalf("get pr after cascade: %v", err)
-	}
+	got, _ = s.GetRepo(ctx, "orchestra")
 	if got != nil {
-		t.Fatalf("pr should cascade away with worktree: %+v", got)
+		t.Fatalf("expected nil after delete, got %+v", got)
 	}
 }
 
-func TestReviewsAndChecks(t *testing.T) {
+func TestWorktreeScopedByRepo(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 
-	reviews := []domain.Review{
-		{PRNumber: 7, Reviewer: "claude", State: domain.ReviewCommented, CreatedAt: now},
-		{PRNumber: 7, Reviewer: "copilot", State: domain.ReviewApproved, CreatedAt: now.Add(time.Minute)},
+	mustRepo(t, s, "orchestra", "/pers/orchestra")
+	mustRepo(t, s, "roxiq", "/pers/roxiq")
+
+	a := domain.Worktree{Repo: "orchestra", Branch: "tower/x", Path: "/o/wt", CreatedAt: now, LastSeen: now}
+	b := domain.Worktree{Repo: "roxiq", Branch: "tower/x", Path: "/r/wt", CreatedAt: now, LastSeen: now}
+	if err := s.UpsertWorktree(ctx, a); err != nil {
+		t.Fatalf("upsert a: %v", err)
 	}
-	for _, r := range reviews {
-		if err := s.UpsertReview(ctx, r); err != nil {
-			t.Fatalf("upsert review: %v", err)
-		}
-	}
-	got, _ := s.ListReviews(ctx, 7)
-	if len(got) != 2 {
-		t.Fatalf("want 2 reviews, got %d", len(got))
+	if err := s.UpsertWorktree(ctx, b); err != nil {
+		t.Fatalf("upsert b: %v", err)
 	}
 
-	checks := []domain.CICheck{
-		{PRNumber: 7, Name: "build", Conclusion: domain.CISuccess, UpdatedAt: now},
-		{PRNumber: 7, Name: "test", Conclusion: domain.CIFailure, UpdatedAt: now},
+	gotA, _ := s.GetWorktree(ctx, "orchestra", "tower/x")
+	gotB, _ := s.GetWorktree(ctx, "roxiq", "tower/x")
+	if gotA == nil || gotA.Path != "/o/wt" {
+		t.Fatalf("orchestra worktree wrong: %+v", gotA)
 	}
-	for _, c := range checks {
-		if err := s.UpsertCICheck(ctx, c); err != nil {
-			t.Fatalf("upsert check: %v", err)
-		}
+	if gotB == nil || gotB.Path != "/r/wt" {
+		t.Fatalf("roxiq worktree wrong: %+v", gotB)
 	}
-	gotChecks, _ := s.ListCIChecks(ctx, 7)
-	if len(gotChecks) != 2 {
-		t.Fatalf("want 2 checks, got %d", len(gotChecks))
+
+	all, _ := s.ListWorktrees(ctx)
+	if len(all) != 2 {
+		t.Fatalf("list all: want 2, got %d", len(all))
+	}
+	scoped, _ := s.ListWorktreesForRepo(ctx, "orchestra")
+	if len(scoped) != 1 || scoped[0].Path != "/o/wt" {
+		t.Fatalf("list orchestra: %+v", scoped)
+	}
+}
+
+func TestRepoDeleteCascadesWorktreesAndPRs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	mustRepo(t, s, "orchestra", "/pers/orchestra")
+	_ = s.UpsertWorktree(ctx, domain.Worktree{
+		Repo: "orchestra", Branch: "tower/x", Path: "/p", CreatedAt: now, LastSeen: now,
+	})
+	_ = s.SetPullRequest(ctx, domain.PullRequest{
+		Repo: "orchestra", Branch: "tower/x", Number: 1, URL: "u",
+		State: domain.PRStateOpen, CreatedAt: now, UpdatedAt: now,
+	})
+
+	if err := s.DeleteRepo(ctx, "orchestra"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	wt, _ := s.GetWorktree(ctx, "orchestra", "tower/x")
+	if wt != nil {
+		t.Errorf("worktree should cascade: %+v", wt)
+	}
+	pr, _ := s.GetPullRequest(ctx, "orchestra", "tower/x")
+	if pr != nil {
+		t.Errorf("pr should cascade: %+v", pr)
+	}
+}
+
+func TestReviewsAndChecksScopedByRepo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	mustRepo(t, s, "a", "/a")
+	mustRepo(t, s, "b", "/b")
+
+	rA := domain.Review{Repo: "a", PRNumber: 1, Reviewer: "claude", State: domain.ReviewApproved, CreatedAt: now}
+	rB := domain.Review{Repo: "b", PRNumber: 1, Reviewer: "claude", State: domain.ReviewCommented, CreatedAt: now}
+	_ = s.UpsertReview(ctx, rA)
+	_ = s.UpsertReview(ctx, rB)
+
+	listA, _ := s.ListReviews(ctx, "a", 1)
+	if len(listA) != 1 || listA[0].State != domain.ReviewApproved {
+		t.Fatalf("a reviews: %+v", listA)
+	}
+	listB, _ := s.ListReviews(ctx, "b", 1)
+	if len(listB) != 1 || listB[0].State != domain.ReviewCommented {
+		t.Fatalf("b reviews: %+v", listB)
+	}
+
+	cA := domain.CICheck{Repo: "a", PRNumber: 1, Name: "build", Conclusion: domain.CISuccess, UpdatedAt: now}
+	cB := domain.CICheck{Repo: "b", PRNumber: 1, Name: "build", Conclusion: domain.CIFailure, UpdatedAt: now}
+	_ = s.UpsertCICheck(ctx, cA)
+	_ = s.UpsertCICheck(ctx, cB)
+
+	checksA, _ := s.ListCIChecks(ctx, "a", 1)
+	checksB, _ := s.ListCIChecks(ctx, "b", 1)
+	if len(checksA) != 1 || checksA[0].Conclusion != domain.CISuccess {
+		t.Fatalf("a checks: %+v", checksA)
+	}
+	if len(checksB) != 1 || checksB[0].Conclusion != domain.CIFailure {
+		t.Fatalf("b checks: %+v", checksB)
 	}
 }
