@@ -2,8 +2,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+
+	"github.com/itsHabib/tower/internal/tui"
 )
 
 func main() {
@@ -41,8 +44,13 @@ func run(args []string) error {
 }
 
 func openTUI() error {
-	fmt.Println("tower v0 — TUI not yet built. Run `tower help` for available commands.")
-	return nil
+	ctx := context.Background()
+	c, cleanup, err := setup(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	return tui.Run(ctx, c.workflow, c.store)
 }
 
 func printUsage() {
@@ -59,5 +67,5 @@ commands:
   open <id>             print worktree path (use: cd $(tower open <id>))
   help                  this message
 
-run with no args to open the TUI (not yet built).`)
+run with no args to open the TUI.`)
 }
