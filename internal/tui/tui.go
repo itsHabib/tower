@@ -48,30 +48,38 @@ type Model struct {
 	syncing    bool
 	lastSync   time.Time
 	err        error
+	noRepos    bool
 	width      int
 	height     int
 	openOnExit string
 }
 
 type worktreeRow struct {
-	wt      domain.Worktree
-	pr      *domain.PullRequest
-	reviews []domain.Review
-	checks  []domain.CICheck
+	wt       domain.Worktree
+	pr       *domain.PullRequest
+	reviews  []domain.Review
+	checks   []domain.CICheck
+	priority Priority
 }
 
 func newModel(ctx context.Context, wf *workflow.Service, s store.Store) *Model {
 	return &Model{ctx: ctx, workflow: wf, store: s}
 }
 
-// Init reconciles the worktree set from git, then loads rows for display.
+// Init paints whatever is cached in the store immediately, then kicks
+// off a background sync so PR/CI data flows in without user input.
 func (m *Model) Init() tea.Cmd {
-	return tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.store))
+	m.syncing = true
+	return tea.Batch(
+		loadCmd(m.ctx, m.workflow, m.store),
+		syncCmd(m.ctx, m.workflow),
+	)
 }
 
 type loadedMsg struct {
-	rows []worktreeRow
-	err  error
+	rows    []worktreeRow
+	noRepos bool
+	err     error
 }
 
 type syncedMsg struct{ err error }
@@ -84,8 +92,12 @@ func reconcileCmd(ctx context.Context, wf *workflow.Service) tea.Cmd {
 	}
 }
 
-func loadCmd(ctx context.Context, s store.Store) tea.Cmd {
+func loadCmd(ctx context.Context, wf *workflow.Service, s store.Store) tea.Cmd {
 	return func() tea.Msg {
+		repos, err := wf.ListRepos(ctx)
+		if err != nil {
+			return loadedMsg{err: err}
+		}
 		worktrees, err := s.ListWorktrees(ctx)
 		if err != nil {
 			return loadedMsg{err: err}
@@ -96,9 +108,10 @@ func loadCmd(ctx context.Context, s store.Store) tea.Cmd {
 			if err != nil {
 				return loadedMsg{err: err}
 			}
+			r.priority = RowPriority(r.wt, r.pr, r.reviews, r.checks)
 			rows = append(rows, r)
 		}
-		return loadedMsg{rows: rows}
+		return loadedMsg{rows: rows, noRepos: len(repos) == 0}
 	}
 }
 
@@ -147,6 +160,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case loadedMsg:
 		m.rows = msg.rows
+		m.noRepos = msg.noRepos
 		m.err = msg.err
 		if m.cursor >= len(m.rows) && len(m.rows) > 0 {
 			m.cursor = len(m.rows) - 1
@@ -161,7 +175,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		}
-		return m, loadCmd(m.ctx, m.store)
+		return m, loadCmd(m.ctx, m.workflow, m.store)
 	}
 	return m, nil
 }
@@ -184,7 +198,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, syncCmd(m.ctx, m.workflow)
 		}
 	case "r":
-		return m, tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.store))
+		return m, tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.workflow, m.store))
 	case "g":
 		if m.mode == ViewGrouped {
 			m.mode = ViewFlat

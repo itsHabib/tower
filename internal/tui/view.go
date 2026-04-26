@@ -11,9 +11,10 @@ const (
 	colBranch = 26
 	colDirty  = 5
 	colAB     = 7
-	colPR     = 16
+	colPR     = 14
 	colCI     = 22
 	colRev    = 22
+	colLast   = 30
 )
 
 // View renders the current model to a string.
@@ -46,12 +47,22 @@ func (m *Model) viewHeader() string {
 
 func (m *Model) viewBody() string {
 	if len(m.rows) == 0 {
-		return dimStyle.Render("no worktrees tracked. register a repo with `tower repo add` and create one with `tower add <name>`.")
+		return dimStyle.Render(m.emptyHint())
 	}
 	if m.mode == ViewFlat {
 		return m.viewFlat()
 	}
 	return m.viewGrouped()
+}
+
+func (m *Model) emptyHint() string {
+	if m.lastSync.IsZero() && m.syncing {
+		return "loading…"
+	}
+	if m.noRepos {
+		return "no repos registered. run `tower repo add` from a git repo to start."
+	}
+	return "no worktrees in any registered repo. create one with `tower add <name>` from inside a repo."
 }
 
 func (m *Model) viewFlat() string {
@@ -60,6 +71,7 @@ func (m *Model) viewFlat() string {
 	b.WriteString("\n")
 	for i, r := range m.rows {
 		line := formatFlatRow(r)
+		line = stylePriority(r.priority, line)
 		prefix := "  "
 		if i == m.cursor {
 			prefix = cursorStyle.Render("> ")
@@ -87,6 +99,7 @@ func (m *Model) viewGrouped() string {
 		b.WriteString("\n")
 		for _, r := range groups.byRepo[repo] {
 			line := formatGroupedRow(r)
+			line = stylePriority(r.priority, line)
 			prefix := "  "
 			if idx == m.cursor {
 				prefix = cursorStyle.Render("> ")
@@ -126,7 +139,7 @@ func flatHeader() string {
 		padRight("PR", colPR),
 		padRight("CI", colCI),
 		padRight("REVIEWS", colRev),
-		"PATH",
+		"LAST",
 	)
 }
 
@@ -138,7 +151,7 @@ func groupedHeader() string {
 		padRight("PR", colPR),
 		padRight("CI", colCI),
 		padRight("REVIEWS", colRev),
-		"PATH",
+		"LAST",
 	)
 }
 
@@ -162,6 +175,7 @@ func formatGroupedRow(r worktreeRow) string {
 	}
 	ci := SummarizeChecks(r.checks)
 	rev := SummarizeReviews(r.reviews)
+	last := formatLast(r.wt.LastCommit, r.wt.Title)
 	return fmt.Sprintf("%s %s %s %s %s %s %s",
 		padRight(branch, colBranch),
 		padRight(dirty, colDirty),
@@ -169,8 +183,22 @@ func formatGroupedRow(r worktreeRow) string {
 		padRight(truncate(pr, colPR), colPR),
 		padRight(truncate(ci, colCI), colCI),
 		padRight(truncate(rev, colRev), colRev),
-		r.wt.Path,
+		truncate(last, colLast),
 	)
+}
+
+func formatLast(t time.Time, subject string) string {
+	age := FormatAge(t)
+	switch {
+	case age == "" && subject == "":
+		return "-"
+	case age == "":
+		return subject
+	case subject == "":
+		return age
+	default:
+		return age + " · " + subject
+	}
 }
 
 func (m *Model) viewFooter() string {
@@ -193,6 +221,9 @@ func (m *Model) viewFooter() string {
 		parts = append(parts, fmt.Sprintf("synced %s ago", time.Since(m.lastSync).Round(time.Second)))
 	}
 	footer := dimStyle.Render(strings.Join(parts, "  ·  "))
+	if len(m.rows) > 0 && m.cursor >= 0 && m.cursor < len(m.rows) {
+		footer += "\n" + dimStyle.Render(m.rows[m.cursor].wt.Path)
+	}
 	if m.err != nil {
 		footer += "\n" + errStyle.Render("error: "+m.err.Error())
 	}

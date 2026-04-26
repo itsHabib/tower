@@ -36,6 +36,8 @@ func run(args []string) error {
 		return cmdReconcile(rest)
 	case "repo":
 		return cmdRepo(rest)
+	case "shell":
+		return cmdShell(rest)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -72,6 +74,11 @@ repo commands:
   repo add [path]       register a repo (defaults to cwd)
   repo ls               list registered repos
   repo rm <name>        unregister a repo
+
+shell integration:
+  shell [bash|zsh|powershell]
+                        print a shell helper that adds a 'tcd' function;
+                        wire it up with: eval "$(tower shell bash)"
 
 run with no args to open the TUI.`)
 }

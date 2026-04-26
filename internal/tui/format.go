@@ -3,9 +3,76 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/itsHabib/tower/internal/domain"
 )
+
+// FormatAge renders a duration since t as a short human label
+// ("just now", "5m ago", "2h ago", "3d ago"). Returns "" for zero time.
+func FormatAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dmo ago", int(d.Hours()/(24*30)))
+	}
+}
+
+// Priority captures how much a worktree wants the user's attention.
+// Higher value = more urgent.
+type Priority int
+
+// Priority levels in increasing urgency.
+const (
+	PriorityNone Priority = iota
+	PriorityDirty
+	PriorityReviewWaiting
+	PriorityChangesRequested
+	PriorityCIFail
+)
+
+// RowPriority computes the highest-impact attention signal for a worktree.
+func RowPriority(wt domain.Worktree, pr *domain.PullRequest, reviews []domain.Review, checks []domain.CICheck) Priority {
+	if pr != nil {
+		for _, c := range checks {
+			if c.Conclusion == domain.CIFailure {
+				return PriorityCIFail
+			}
+		}
+		latest := latestPerReviewer(reviews)
+		for _, st := range latest {
+			if st == domain.ReviewChangesRequested {
+				return PriorityChangesRequested
+			}
+		}
+		if pr.State == domain.PRStateOpen && len(latest) == 0 {
+			return PriorityReviewWaiting
+		}
+	}
+	if wt.Dirty {
+		return PriorityDirty
+	}
+	return PriorityNone
+}
+
+func latestPerReviewer(reviews []domain.Review) map[string]domain.ReviewState {
+	out := map[string]domain.ReviewState{}
+	for _, r := range reviews {
+		out[r.Reviewer] = r.State
+	}
+	return out
+}
 
 // SummarizeChecks renders a one-line summary of CI check outcomes.
 func SummarizeChecks(checks []domain.CICheck) string {

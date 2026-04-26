@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/itsHabib/tower/internal/domain"
@@ -86,10 +88,36 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return err
 	}
+	wt, err := c.workflow.Resolve(ctx, repoName, name)
+	if err != nil {
+		return err
+	}
+	if wt == nil {
+		return fmt.Errorf("no worktree tracked for %s/%s", repoName, name)
+	}
+	if err := refuseIfCwdInside(wt.Path); err != nil {
+		return err
+	}
 	if err := c.workflow.Remove(ctx, repoName, name); err != nil {
 		return err
 	}
 	fmt.Printf("removed: %s/%s\n", repoName, name)
+	return nil
+}
+
+// refuseIfCwdInside errors out if the current working directory is at or
+// below target. On Windows git worktree remove fails with "permission
+// denied" in this case because the shell holds an open handle to the dir.
+func refuseIfCwdInside(target string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil //nolint:nilerr // best-effort safety check: if cwd is unreadable, let git surface its own error
+	}
+	cwd = filepath.Clean(cwd)
+	target = filepath.Clean(target)
+	if cwd == target || strings.HasPrefix(cwd, target+string(filepath.Separator)) {
+		return fmt.Errorf("refusing to remove %s: your shell is currently inside it. cd elsewhere first", target)
+	}
 	return nil
 }
 
@@ -179,7 +207,9 @@ func cmdLs(args []string) error {
 		return err
 	}
 	if len(repos) == 0 {
-		fmt.Println("no repos registered. run `tower repo add` from a git repo.")
+		fmt.Println("no repos registered yet.")
+		fmt.Println()
+		fmt.Println("  cd <repo> && tower repo add")
 		return nil
 	}
 	if *flat {
@@ -206,7 +236,7 @@ func printFlat(ctx context.Context, c *cliCtx) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "REPO\tBRANCH\tDIRTY\tA/B\tPR\tCI\tPATH"); err != nil {
+	if _, err := fmt.Fprintln(w, "REPO\tBRANCH\tDIRTY\tA/B\tPR\tCI\tLAST\tPATH"); err != nil {
 		return err
 	}
 	for _, wt := range worktrees {
@@ -237,8 +267,9 @@ func writeFlatRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Worktre
 		dirty = "yes"
 	}
 	ab := fmt.Sprintf("%d/%d", wt.Ahead, wt.Behind)
-	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-		wt.Repo, wt.Branch, dirty, ab, prStr, ciStr, wt.Path)
+	last := lastSummary(wt)
+	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		wt.Repo, wt.Branch, dirty, ab, prStr, ciStr, last, wt.Path)
 	return err
 }
 
@@ -253,7 +284,7 @@ func printRepoSection(ctx context.Context, c *cliCtx, repo domain.Repo) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "  BRANCH\tDIRTY\tA/B\tPR\tCI\tPATH"); err != nil {
+	if _, err := fmt.Fprintln(w, "  BRANCH\tDIRTY\tA/B\tPR\tCI\tLAST\tPATH"); err != nil {
 		return err
 	}
 	for _, wt := range worktrees {
@@ -284,9 +315,24 @@ func writeWorktreeRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Wor
 		dirty = "yes"
 	}
 	ab := fmt.Sprintf("%d/%d", wt.Ahead, wt.Behind)
-	_, err = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n",
-		wt.Branch, dirty, ab, prStr, ciStr, wt.Path)
+	last := lastSummary(wt)
+	_, err = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		wt.Branch, dirty, ab, prStr, ciStr, last, wt.Path)
 	return err
+}
+
+func lastSummary(wt domain.Worktree) string {
+	age := tui.FormatAge(wt.LastCommit)
+	switch {
+	case age == "" && wt.Title == "":
+		return "-"
+	case age == "":
+		return wt.Title
+	case wt.Title == "":
+		return age
+	default:
+		return age + " · " + wt.Title
+	}
 }
 
 func cmdOpen(args []string) error {
