@@ -1,3 +1,5 @@
+// Package workflow composes the store, git ops, and refresh service into the
+// high-level operations that the CLI and TUI both call.
 package workflow
 
 import (
@@ -13,6 +15,7 @@ import (
 	"github.com/itsHabib/tower/internal/store"
 )
 
+// Config controls where worktrees land and how branches are named.
 type Config struct {
 	Repo         string
 	WorktreeBase string
@@ -28,6 +31,7 @@ func (c *Config) defaults() {
 	}
 }
 
+// Service is the unified workflow surface that callers (CLI, TUI) drive.
 type Service struct {
 	cfg     Config
 	store   store.Store
@@ -36,11 +40,16 @@ type Service struct {
 	now     func() time.Time
 }
 
+// New builds a Service. Empty Config fields fall back to sensible defaults
+// (.worktrees/ for worktree base, tower/ branch prefix).
 func New(cfg Config, s store.Store, git observe.Git, ref *refresh.Service) *Service {
 	cfg.defaults()
 	return &Service{cfg: cfg, store: s, git: git, refresh: ref, now: func() time.Time { return time.Now().UTC() }}
 }
 
+// Add creates a git worktree on a fresh branch for the named task and
+// flips the task's status to active. Errors if the task is unknown or a
+// worktree already exists.
 func (s *Service) Add(ctx context.Context, taskID string) error {
 	t, err := s.store.GetTask(ctx, taskID)
 	if err != nil {
@@ -78,6 +87,7 @@ func (s *Service) Add(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// Remove tears down the task's worktree (if any) and marks the task abandoned.
 func (s *Service) Remove(ctx context.Context, taskID string) error {
 	wt, err := s.store.GetWorktree(ctx, taskID)
 	if err != nil {
@@ -103,16 +113,21 @@ func (s *Service) Remove(ctx context.Context, taskID string) error {
 	return s.store.UpsertTask(ctx, *t)
 }
 
+// Sync triggers a refresh sweep across every tracked task.
 func (s *Service) Sync(ctx context.Context) (refresh.AllResult, error) {
 	return s.refresh.All(ctx)
 }
 
+// DiscoverResult summarizes a Discover call.
 type DiscoverResult struct {
 	Added   int
 	Updated int
 	Tasks   []domain.Task
 }
 
+// Discover scans dir for markdown tasks and reconciles them with the store.
+// New files become tasks; existing tasks have metadata refreshed but their
+// status is preserved.
 func (s *Service) Discover(ctx context.Context, dir string) (DiscoverResult, error) {
 	found, err := discover.Scan(dir)
 	if err != nil {

@@ -10,11 +10,13 @@ import (
 	"github.com/itsHabib/tower/internal/domain"
 )
 
+// GHObserver implements GH by shelling out to the gh CLI.
 type GHObserver struct {
 	Repo   string
 	Runner Runner
 }
 
+// NewGH returns a GHObserver invoking gh from repoDir, using ExecRunner.
 func NewGH(repoDir string) *GHObserver {
 	return &GHObserver{Repo: repoDir, Runner: ExecRunner{}}
 }
@@ -28,6 +30,7 @@ type ghPullRequest struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// PullRequestForBranch returns the most recent PR opened for branch, or nil.
 func (g *GHObserver) PullRequestForBranch(ctx context.Context, branch string) (*domain.PullRequest, error) {
 	out, err := g.Runner.Run(ctx, g.Repo,
 		"gh", "pr", "list",
@@ -93,6 +96,7 @@ type ghAuthor struct {
 	Login string `json:"login"`
 }
 
+// Reviews returns all reviews currently attached to the given PR number.
 func (g *GHObserver) Reviews(ctx context.Context, prNumber int) ([]domain.Review, error) {
 	out, err := g.Runner.Run(ctx, g.Repo,
 		"gh", "pr", "view", strconv.Itoa(prNumber),
@@ -150,6 +154,7 @@ type ghCheck struct {
 	StartedAt   time.Time `json:"startedAt"`
 }
 
+// Checks returns the latest status of every CI check on the given PR.
 func (g *GHObserver) Checks(ctx context.Context, prNumber int) ([]domain.CICheck, error) {
 	out, err := g.Runner.Run(ctx, g.Repo,
 		"gh", "pr", "view", strconv.Itoa(prNumber),
@@ -194,8 +199,8 @@ func mapCheckConclusion(status, conclusion string) domain.CIConclusion {
 		return domain.CIFailure
 	case "SKIPPED", "NEUTRAL":
 		return domain.CISkipped
-	case "CANCELLED":
-		return domain.CICancelled
+	case "CANCELLED": //nolint:misspell // GitHub API uses British spelling
+		return domain.CICanceled
 	case "":
 		return domain.CIPending
 	default:

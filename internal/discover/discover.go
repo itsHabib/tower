@@ -1,3 +1,6 @@
+// Package discover scans a directory of markdown task briefs and returns
+// them as domain.Task records. It is pure: no store, no side effects beyond
+// filesystem reads.
 package discover
 
 import (
@@ -60,8 +63,8 @@ func parseTask(path string, data []byte, mtime time.Time) domain.Task {
 	}
 }
 
-func splitFrontmatter(data []byte) (body []byte, fm map[string]string) {
-	fm = map[string]string{}
+func splitFrontmatter(data []byte) ([]byte, map[string]string) {
+	fm := map[string]string{}
 	switch {
 	case bytes.HasPrefix(data, []byte("---\n")):
 		data = data[len("---\n"):]
@@ -80,7 +83,7 @@ func splitFrontmatter(data []byte) (body []byte, fm map[string]string) {
 		return data, fm
 	}
 	fmBlock := data[:end]
-	body = data[end+skip:]
+	body := data[end+skip:]
 	for _, line := range strings.Split(string(fmBlock), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // pure-Go sqlite driver registered as "sqlite"
 
 	"github.com/itsHabib/tower/internal/domain"
 )
@@ -72,16 +72,18 @@ type sqliteStore struct {
 	db *sql.DB
 }
 
-func OpenSQLite(path string) (Store, error) {
+// OpenSQLite opens or creates a SQLite-backed Store at the given path,
+// applies the schema, and enables foreign-key cascades.
+func OpenSQLite(ctx context.Context, path string) (Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
-	if _, err := db.Exec(schemaSQL); err != nil {
+	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
@@ -138,7 +140,7 @@ FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.Task
 	for rows.Next() {
 		var t domain.Task
@@ -252,7 +254,7 @@ FROM reviews WHERE pr_number = ? ORDER BY created_at ASC`, prNumber)
 	if err != nil {
 		return nil, fmt.Errorf("list reviews: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.Review
 	for rows.Next() {
 		var r domain.Review
@@ -288,7 +290,7 @@ FROM ci_checks WHERE pr_number = ? ORDER BY name ASC`, prNumber)
 	if err != nil {
 		return nil, fmt.Errorf("list ci checks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.CICheck
 	for rows.Next() {
 		var c domain.CICheck

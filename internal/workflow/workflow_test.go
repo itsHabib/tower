@@ -49,7 +49,7 @@ func (fakeGH) Checks(context.Context, int) ([]domain.CICheck, error) { return ni
 
 func newSvc(t *testing.T, git observe.Git) (*Service, store.Store) {
 	t.Helper()
-	s, err := store.OpenSQLite(filepath.Join(t.TempDir(), "state.db"))
+	s, err := store.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -93,6 +93,7 @@ func TestParseReviews(t *testing.T) {
 }
 
 func TestParseChecks(t *testing.T) {
+	//nolint:misspell // GitHub API uses British "CANCELLED" in conclusions
 	body := `{
 		"statusCheckRollup": [
 			{"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci/build", "completedAt": "2026-04-25T10:00:00Z"},
@@ -111,7 +112,7 @@ func TestParseChecks(t *testing.T) {
 		"test":   domain.CIFailure,
 		"lint":   domain.CIPending,
 		"deploy": domain.CISkipped,
-		"smoke":  domain.CICancelled,
+		"smoke":  domain.CICanceled,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("want %d checks, got %d", len(want), len(got))

@@ -48,7 +48,7 @@ func (f *fakeGH) Checks(_ context.Context, prNumber int) ([]domain.CICheck, erro
 
 func newStore(t *testing.T) store.Store {
 	t.Helper()
-	s, err := store.OpenSQLite(filepath.Join(t.TempDir(), "state.db"))
+	s, err := store.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

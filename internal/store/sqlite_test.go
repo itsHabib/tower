@@ -12,7 +12,7 @@ import (
 func newTestStore(t *testing.T) Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := OpenSQLite(filepath.Join(dir, "state.db"))
+	s, err := OpenSQLite(context.Background(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
