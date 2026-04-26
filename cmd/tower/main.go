@@ -74,6 +74,8 @@ repo commands:
   repo add [path]       register a repo (defaults to cwd)
   repo ls               list registered repos
   repo rm <name>        unregister a repo
+  repo prune [--dry-run]
+                        unregister repos whose path no longer exists
 
 shell integration:
   shell [bash|zsh|powershell]

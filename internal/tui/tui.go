@@ -49,6 +49,8 @@ type Model struct {
 	rows       []worktreeRow
 	cursor     int
 	mode       ViewMode
+	filter     string
+	filtering  bool // true = keystrokes append to filter
 	syncing    bool
 	lastSync   time.Time
 	err        error
@@ -227,17 +229,41 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
+	if m.handleNavKey(msg) {
+		return m, nil
+	}
+	return m.handleActionKey(msg)
+}
+
+func (m *Model) handleNavKey(msg tea.KeyMsg) bool {
+	visible := m.visibleRows()
 	switch msg.String() {
-	case "q", "ctrl+c":
-		return m, tea.Quit
 	case "j", "down":
-		if m.cursor < len(m.rows)-1 {
+		if m.cursor < len(visible)-1 {
 			m.cursor++
 		}
 	case "k", "up":
 		if m.cursor > 0 {
 			m.cursor--
 		}
+	case "/":
+		m.filtering = true
+	case "esc":
+		m.filter = ""
+		m.cursor = 0
+	default:
+		return false
+	}
+	return true
+}
+
+func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
 	case "s":
 		if !m.syncing {
 			m.syncing = true
@@ -252,8 +278,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ViewGrouped
 		}
 	case "enter":
-		if len(m.rows) > 0 {
-			m.openOnExit = m.rows[m.cursor].wt.Path
+		visible := m.visibleRows()
+		if len(visible) > 0 {
+			m.openOnExit = visible[m.cursor].wt.Path
 			return m, tea.Quit
 		}
 	case "o":
@@ -262,11 +289,53 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.filtering = false
+		m.filter = ""
+		m.cursor = 0
+	case tea.KeyEnter:
+		m.filtering = false
+	case tea.KeyBackspace:
+		if m.filter != "" {
+			m.filter = m.filter[:len(m.filter)-1]
+			m.cursor = 0
+		}
+	case tea.KeyCtrlU:
+		m.filter = ""
+		m.cursor = 0
+	case tea.KeyRunes, tea.KeySpace:
+		m.filter += string(msg.Runes)
+		m.cursor = 0
+	default:
+		// ignore other keys while filtering
+	}
+	return m, nil
+}
+
+func (m *Model) visibleRows() []worktreeRow {
+	if m.filter == "" {
+		return m.rows
+	}
+	f := lowerASCII(m.filter)
+	out := make([]worktreeRow, 0, len(m.rows))
+	for _, r := range m.rows {
+		if matchesFilter(r, f) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (m *Model) openCursorPR() {
-	if len(m.rows) == 0 {
+	visible := m.visibleRows()
+	if len(visible) == 0 {
 		return
 	}
-	pr := m.rows[m.cursor].pr
+	pr := visible[m.cursor].pr
 	if pr == nil || pr.URL == "" {
 		return
 	}

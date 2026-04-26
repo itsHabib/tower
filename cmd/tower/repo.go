@@ -5,13 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"text/tabwriter"
 )
 
 func cmdRepo(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tower repo <add|ls|rm> [...]")
+		return errors.New("usage: tower repo <add|ls|rm|prune> [...]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -21,15 +22,17 @@ func cmdRepo(args []string) error {
 		return cmdRepoLs(rest)
 	case "rm":
 		return cmdRepoRm(rest)
+	case "prune":
+		return cmdRepoPrune(rest)
 	default:
 		return fmt.Errorf("unknown repo subcommand: %s", sub)
 	}
 }
 
 func cmdRepoAdd(args []string) error {
-	fs := flag.NewFlagSet("repo add", flag.ExitOnError)
-	name := fs.String("name", "", "repo name (defaults to directory basename)")
-	if err := fs.Parse(args); err != nil {
+	fset := flag.NewFlagSet("repo add", flag.ExitOnError)
+	name := fset.String("name", "", "repo name (defaults to directory basename)")
+	if err := fset.Parse(args); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -40,8 +43,8 @@ func cmdRepoAdd(args []string) error {
 	defer cleanup()
 
 	path := ""
-	if fs.NArg() > 0 {
-		path = fs.Arg(0)
+	if fset.NArg() > 0 {
+		path = fset.Arg(0)
 	}
 	if path == "" {
 		top, err := gitTopLevel(ctx)
@@ -59,8 +62,8 @@ func cmdRepoAdd(args []string) error {
 }
 
 func cmdRepoLs(args []string) error {
-	fs := flag.NewFlagSet("repo ls", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
+	fset := flag.NewFlagSet("repo ls", flag.ExitOnError)
+	if err := fset.Parse(args); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -91,14 +94,14 @@ func cmdRepoLs(args []string) error {
 }
 
 func cmdRepoRm(args []string) error {
-	fs := flag.NewFlagSet("repo rm", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
+	fset := flag.NewFlagSet("repo rm", flag.ExitOnError)
+	if err := fset.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() < 1 {
+	if fset.NArg() < 1 {
 		return errors.New("usage: tower repo rm <name>")
 	}
-	name := fs.Arg(0)
+	name := fset.Arg(0)
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
 	if err != nil {
@@ -109,5 +112,48 @@ func cmdRepoRm(args []string) error {
 		return err
 	}
 	fmt.Printf("unregistered: %s\n", name)
+	return nil
+}
+
+func cmdRepoPrune(args []string) error {
+	fset := flag.NewFlagSet("repo prune", flag.ExitOnError)
+	dryRun := fset.Bool("dry-run", false, "report what would be removed without removing")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	c, cleanup, err := setup(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	repos, err := c.workflow.ListRepos(ctx)
+	if err != nil {
+		return err
+	}
+	missing := make([]string, 0, len(repos))
+	for _, r := range repos {
+		if _, statErr := os.Stat(r.Path); errors.Is(statErr, fs.ErrNotExist) {
+			missing = append(missing, r.Name)
+		}
+	}
+	if len(missing) == 0 {
+		fmt.Println("nothing to prune.")
+		return nil
+	}
+	if *dryRun {
+		fmt.Printf("would remove %d repo(s):\n", len(missing))
+		for _, name := range missing {
+			fmt.Printf("  %s\n", name)
+		}
+		return nil
+	}
+	for _, name := range missing {
+		if err := c.workflow.RemoveRepo(ctx, name); err != nil {
+			return fmt.Errorf("remove %s: %w", name, err)
+		}
+		fmt.Printf("pruned: %s\n", name)
+	}
 	return nil
 }

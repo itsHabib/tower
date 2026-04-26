@@ -66,6 +66,31 @@ func RowPriority(wt domain.Worktree, pr *domain.PullRequest, reviews []domain.Re
 	return PriorityNone
 }
 
+func lowerASCII(s string) string {
+	out := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		out[i] = c
+	}
+	return string(out)
+}
+
+func matchesFilter(r worktreeRow, lowered string) bool {
+	if strings.Contains(lowerASCII(r.wt.Branch), lowered) {
+		return true
+	}
+	if strings.Contains(lowerASCII(r.wt.Repo), lowered) {
+		return true
+	}
+	if strings.Contains(lowerASCII(r.wt.Title), lowered) {
+		return true
+	}
+	return false
+}
+
 func latestPerReviewer(reviews []domain.Review) map[string]domain.ReviewState {
 	out := map[string]domain.ReviewState{}
 	for _, r := range reviews {

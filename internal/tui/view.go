@@ -37,17 +37,34 @@ func (m *Model) viewHeader() string {
 	if m.mode == ViewFlat {
 		mode = "flat"
 	}
-	hint := dimStyle.Render(fmt.Sprintf("[q] quit  [s] sync  [r] reload  [g] %s  [↑/↓] move  [enter] cd  [o] PR in browser  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
+	hint := dimStyle.Render(fmt.Sprintf("[q] quit  [s] sync  [r] reload  [g] %s  [/] filter  [↑/↓] move  [enter] cd  [o] PR  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
 	syncState := ""
 	if m.syncing {
 		syncState = pendingStyle.Render("◯ syncing…")
 	}
-	return fmt.Sprintf("%s  %s\n%s", title, syncState, hint)
+	out := fmt.Sprintf("%s  %s\n%s", title, syncState, hint)
+	if m.filter != "" || m.filtering {
+		out += "\n" + m.viewFilterLine()
+	}
+	return out
+}
+
+func (m *Model) viewFilterLine() string {
+	visible := len(m.visibleRows())
+	suffix := ""
+	if m.filtering {
+		suffix = "_"
+	}
+	label := fmt.Sprintf("filter: %s%s  (%d of %d)", m.filter, suffix, visible, len(m.rows))
+	return cursorStyle.Render(label)
 }
 
 func (m *Model) viewBody() string {
 	if len(m.rows) == 0 {
 		return dimStyle.Render(m.emptyHint())
+	}
+	if m.filter != "" && len(m.visibleRows()) == 0 {
+		return dimStyle.Render(fmt.Sprintf("no worktrees match %q", m.filter))
 	}
 	if m.mode == ViewFlat {
 		return m.viewFlat()
@@ -66,10 +83,11 @@ func (m *Model) emptyHint() string {
 }
 
 func (m *Model) viewFlat() string {
+	visible := m.visibleRows()
 	var b strings.Builder
 	b.WriteString(headerStyle.Render(flatHeader()))
 	b.WriteString("\n")
-	for i, r := range m.rows {
+	for i, r := range visible {
 		line := formatFlatRow(r)
 		line = stylePriority(r.priority, line)
 		prefix := "  "
@@ -85,7 +103,8 @@ func (m *Model) viewFlat() string {
 }
 
 func (m *Model) viewGrouped() string {
-	groups := groupByRepo(m.rows)
+	visible := m.visibleRows()
+	groups := groupByRepo(visible)
 	var b strings.Builder
 	idx := 0
 	for gi, repo := range groups.order {
@@ -221,8 +240,9 @@ func (m *Model) viewFooter() string {
 		parts = append(parts, fmt.Sprintf("synced %s ago", time.Since(m.lastSync).Round(time.Second)))
 	}
 	footer := dimStyle.Render(strings.Join(parts, "  ·  "))
-	if len(m.rows) > 0 && m.cursor >= 0 && m.cursor < len(m.rows) {
-		footer += "\n" + dimStyle.Render(m.rows[m.cursor].wt.Path)
+	visible := m.visibleRows()
+	if len(visible) > 0 && m.cursor >= 0 && m.cursor < len(visible) {
+		footer += "\n" + dimStyle.Render(visible[m.cursor].wt.Path)
 	}
 	if m.err != nil {
 		footer += "\n" + errStyle.Render("error: "+m.err.Error())
