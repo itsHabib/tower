@@ -32,6 +32,9 @@ func cmdDiscover(args []string) error {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(c.repo, target)
 	}
+	if err := preflightDir(target, c.repo); err != nil {
+		return err
+	}
 	res, err := c.workflow.Discover(ctx, target)
 	if err != nil {
 		return fmt.Errorf("discover: %w", err)
