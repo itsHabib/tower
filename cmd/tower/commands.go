@@ -7,42 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/itsHabib/tower/internal/domain"
+	"github.com/itsHabib/tower/internal/tui"
 )
-
-func cmdDiscover(args []string) error {
-	fs := flag.NewFlagSet("discover", flag.ExitOnError)
-	dir := fs.String("d", "features", "directory to scan for task markdown files")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-	c, cleanup, err := setup(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	target := *dir
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(c.repo, target)
-	}
-	if err := preflightDir(target, c.repo); err != nil {
-		return err
-	}
-	res, err := c.workflow.Discover(ctx, target)
-	if err != nil {
-		return fmt.Errorf("discover: %w", err)
-	}
-	fmt.Printf("discover: %d added, %d updated, %d total in %s\n",
-		res.Added, res.Updated, len(res.Tasks), target)
-	return nil
-}
 
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
@@ -50,9 +19,9 @@ func cmdAdd(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("usage: tower add <task-id>")
+		return errors.New("usage: tower add <name>")
 	}
-	taskID := fs.Arg(0)
+	name := fs.Arg(0)
 
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
@@ -61,14 +30,11 @@ func cmdAdd(args []string) error {
 	}
 	defer cleanup()
 
-	if err := c.workflow.Add(ctx, taskID); err != nil {
-		return err
-	}
-	wt, err := c.store.GetWorktree(ctx, taskID)
+	w, err := c.workflow.Add(ctx, name)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("added: worktree at %s on branch %s\n", wt.Path, wt.Branch)
+	fmt.Printf("added: worktree at %s on branch %s\n", w.Path, w.Branch)
 	return nil
 }
 
@@ -78,9 +44,9 @@ func cmdRm(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("usage: tower rm <task-id>")
+		return errors.New("usage: tower rm <name>")
 	}
-	taskID := fs.Arg(0)
+	name := fs.Arg(0)
 
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
@@ -89,10 +55,10 @@ func cmdRm(args []string) error {
 	}
 	defer cleanup()
 
-	if err := c.workflow.Remove(ctx, taskID); err != nil {
+	if err := c.workflow.Remove(ctx, name); err != nil {
 		return err
 	}
-	fmt.Printf("removed: %s\n", taskID)
+	fmt.Printf("removed: %s\n", name)
 	return nil
 }
 
@@ -101,7 +67,6 @@ func cmdSync(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
 	if err != nil {
@@ -114,14 +79,33 @@ func cmdSync(args []string) error {
 		return err
 	}
 	fmt.Printf("sync: %d ok, %d errors\n", res.Synced, len(res.Errors))
-	for id, e := range res.Errors {
-		fmt.Fprintf(os.Stderr, "  %s: %v\n", id, e)
+	for branch, e := range res.Errors {
+		fmt.Fprintf(os.Stderr, "  %s: %v\n", branch, e)
 	}
+	return nil
+}
+
+func cmdReconcile(args []string) error {
+	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	c, cleanup, err := setup(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := c.workflow.Reconcile(ctx); err != nil {
+		return err
+	}
+	fmt.Println("reconcile: ok")
 	return nil
 }
 
 func cmdLs(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+	noReconcile := fs.Bool("no-reconcile", false, "skip the git reconcile pass before listing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -132,32 +116,33 @@ func cmdLs(args []string) error {
 	}
 	defer cleanup()
 
-	tasks, err := c.store.ListTasks(ctx)
+	if !*noReconcile {
+		if err := c.workflow.Reconcile(ctx); err != nil {
+			return fmt.Errorf("reconcile: %w", err)
+		}
+	}
+	worktrees, err := c.store.ListWorktrees(ctx)
 	if err != nil {
 		return err
 	}
-	if len(tasks) == 0 {
-		fmt.Println("no tasks")
+	if len(worktrees) == 0 {
+		fmt.Println("no worktrees tracked")
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "ID\tSTATUS\tPR\tCI\tWORKTREE"); err != nil {
+	if _, err := fmt.Fprintln(w, "BRANCH\tDIRTY\tA/B\tPR\tCI\tPATH"); err != nil {
 		return err
 	}
-	for _, t := range tasks {
-		if err := writeTaskRow(ctx, w, c, t); err != nil {
+	for _, wt := range worktrees {
+		if err := writeWorktreeRow(ctx, w, c, wt); err != nil {
 			return err
 		}
 	}
 	return w.Flush()
 }
 
-func writeTaskRow(ctx context.Context, w io.Writer, c *cliCtx, t domain.Task) error {
-	wt, err := c.store.GetWorktree(ctx, t.ID)
-	if err != nil {
-		return err
-	}
-	pr, err := c.store.GetPullRequest(ctx, t.ID)
+func writeWorktreeRow(ctx context.Context, w io.Writer, c *cliCtx, wt domain.Worktree) error {
+	pr, err := c.store.GetPullRequest(ctx, wt.Branch)
 	if err != nil {
 		return err
 	}
@@ -169,35 +154,16 @@ func writeTaskRow(ctx context.Context, w io.Writer, c *cliCtx, t domain.Task) er
 		if err != nil {
 			return err
 		}
-		ciStr = summarizeChecks(checks)
+		ciStr = tui.SummarizeChecks(checks)
 	}
-	wtStr := "-"
-	if wt != nil {
-		wtStr = wt.Path
+	dirty := "-"
+	if wt.Dirty {
+		dirty = "yes"
 	}
-	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Status, prStr, ciStr, wtStr)
+	ab := fmt.Sprintf("%d/%d", wt.Ahead, wt.Behind)
+	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		wt.Branch, dirty, ab, prStr, ciStr, wt.Path)
 	return err
-}
-
-func summarizeChecks(checks []domain.CICheck) string {
-	if len(checks) == 0 {
-		return "-"
-	}
-	counts := map[domain.CIConclusion]int{}
-	for _, c := range checks {
-		counts[c.Conclusion]++
-	}
-	order := []domain.CIConclusion{
-		domain.CISuccess, domain.CIFailure, domain.CIPending,
-		domain.CISkipped, domain.CICanceled,
-	}
-	parts := make([]string, 0, len(order))
-	for _, conc := range order {
-		if counts[conc] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[conc], conc))
-		}
-	}
-	return strings.Join(parts, " ")
 }
 
 func cmdOpen(args []string) error {
@@ -206,9 +172,9 @@ func cmdOpen(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("usage: tower open <task-id>")
+		return errors.New("usage: tower open <name>")
 	}
-	taskID := fs.Arg(0)
+	name := fs.Arg(0)
 
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
@@ -217,12 +183,12 @@ func cmdOpen(args []string) error {
 	}
 	defer cleanup()
 
-	wt, err := c.store.GetWorktree(ctx, taskID)
+	wt, err := c.workflow.Resolve(ctx, name)
 	if err != nil {
 		return err
 	}
 	if wt == nil {
-		return fmt.Errorf("no worktree for %s", taskID)
+		return fmt.Errorf("no worktree for %s", name)
 	}
 	fmt.Println(wt.Path)
 	return nil

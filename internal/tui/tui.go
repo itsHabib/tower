@@ -28,12 +28,12 @@ func Run(ctx context.Context, wf *workflow.Service, s store.Store) error {
 	return nil
 }
 
-// Model is the bubbletea model for the board view.
+// Model is the bubbletea model for the worktree board view.
 type Model struct {
 	ctx        context.Context
 	workflow   *workflow.Service
 	store      store.Store
-	rows       []taskRow
+	rows       []worktreeRow
 	cursor     int
 	syncing    bool
 	lastSync   time.Time
@@ -43,9 +43,8 @@ type Model struct {
 	openOnExit string
 }
 
-type taskRow struct {
-	task    domain.Task
-	wt      *domain.Worktree
+type worktreeRow struct {
+	wt      domain.Worktree
 	pr      *domain.PullRequest
 	reviews []domain.Review
 	checks  []domain.CICheck
@@ -55,29 +54,35 @@ func newModel(ctx context.Context, wf *workflow.Service, s store.Store) *Model {
 	return &Model{ctx: ctx, workflow: wf, store: s}
 }
 
+// Init reconciles the worktree set from git, then loads rows for display.
+func (m *Model) Init() tea.Cmd {
+	return tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.store))
+}
+
 type loadedMsg struct {
-	rows []taskRow
+	rows []worktreeRow
 	err  error
 }
 
-type syncedMsg struct {
-	err error
-}
+type syncedMsg struct{ err error }
 
-// Init returns the initial command: load all tasks from the store.
-func (m *Model) Init() tea.Cmd {
-	return loadCmd(m.ctx, m.store)
+type reconciledMsg struct{ err error }
+
+func reconcileCmd(ctx context.Context, wf *workflow.Service) tea.Cmd {
+	return func() tea.Msg {
+		return reconciledMsg{err: wf.Reconcile(ctx)}
+	}
 }
 
 func loadCmd(ctx context.Context, s store.Store) tea.Cmd {
 	return func() tea.Msg {
-		tasks, err := s.ListTasks(ctx)
+		worktrees, err := s.ListWorktrees(ctx)
 		if err != nil {
 			return loadedMsg{err: err}
 		}
-		rows := make([]taskRow, 0, len(tasks))
-		for _, t := range tasks {
-			r, err := loadRow(ctx, s, t)
+		rows := make([]worktreeRow, 0, len(worktrees))
+		for _, wt := range worktrees {
+			r, err := loadRow(ctx, s, wt)
 			if err != nil {
 				return loadedMsg{err: err}
 			}
@@ -87,16 +92,11 @@ func loadCmd(ctx context.Context, s store.Store) tea.Cmd {
 	}
 }
 
-func loadRow(ctx context.Context, s store.Store, t domain.Task) (taskRow, error) {
-	r := taskRow{task: t}
-	wt, err := s.GetWorktree(ctx, t.ID)
+func loadRow(ctx context.Context, s store.Store, wt domain.Worktree) (worktreeRow, error) {
+	r := worktreeRow{wt: wt}
+	pr, err := s.GetPullRequest(ctx, wt.Branch)
 	if err != nil {
-		return r, fmt.Errorf("worktree %s: %w", t.ID, err)
-	}
-	r.wt = wt
-	pr, err := s.GetPullRequest(ctx, t.ID)
-	if err != nil {
-		return r, fmt.Errorf("pr %s: %w", t.ID, err)
+		return r, fmt.Errorf("pr %s: %w", wt.Branch, err)
 	}
 	r.pr = pr
 	if pr == nil {
@@ -130,6 +130,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case reconciledMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		}
+		return m, nil
 	case loadedMsg:
 		m.rows = msg.rows
 		m.err = msg.err
@@ -169,9 +174,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, syncCmd(m.ctx, m.workflow)
 		}
 	case "r":
-		return m, loadCmd(m.ctx, m.store)
+		return m, tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.store))
 	case "enter":
-		if len(m.rows) > 0 && m.rows[m.cursor].wt != nil {
+		if len(m.rows) > 0 {
 			m.openOnExit = m.rows[m.cursor].wt.Path
 			return m, tea.Quit
 		}

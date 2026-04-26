@@ -1,39 +1,21 @@
-// Package domain holds the core types tower tracks: tasks, worktrees, pull
-// requests, reviews, and CI checks. No behavior, no external dependencies.
+// Package domain holds the core types tower tracks: worktrees and the
+// pull-request, review, and CI state they accumulate.
 package domain
 
 import "time"
 
-// Status is the lifecycle state of a task as tower understands it.
-type Status string
-
-// Task lifecycle values.
-const (
-	StatusDraft     Status = "draft"
-	StatusActive    Status = "active"
-	StatusBlocked   Status = "blocked"
-	StatusMerged    Status = "merged"
-	StatusAbandoned Status = "abandoned"
-)
-
-// Task is one unit of agentic work — usually one markdown brief in features/.
-type Task struct {
-	ID        string
-	Title     string
-	Brief     string
-	Path      string
-	Deps      []string
-	Status    Status
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-// Worktree binds a task to a git worktree on disk.
+// Worktree is one git worktree as tower sees it. Identity is the branch.
 type Worktree struct {
-	TaskID    string
-	Path      string
-	Branch    string
-	CreatedAt time.Time
+	Branch     string
+	Path       string
+	HEAD       string
+	Title      string
+	Dirty      bool
+	Ahead      int
+	Behind     int
+	LastCommit time.Time
+	CreatedAt  time.Time
+	LastSeen   time.Time
 }
 
 // PRState mirrors the lifecycle of a GitHub pull request.
@@ -46,9 +28,9 @@ const (
 	PRStateMerged PRState = "merged"
 )
 
-// PullRequest is the state of the GitHub PR opened for a task's branch.
+// PullRequest is the latest known state of the PR opened for a branch.
 type PullRequest struct {
-	TaskID    string
+	Branch    string
 	Number    int
 	URL       string
 	State     PRState

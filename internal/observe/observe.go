@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/itsHabib/tower/internal/domain"
 )
@@ -19,11 +20,19 @@ type Worktree struct {
 	HEAD   string
 }
 
-// Git is the local git surface tower uses: list, add, and remove worktrees.
+// Git is the local git surface tower uses.
 type Git interface {
 	Worktrees(ctx context.Context) ([]Worktree, error)
 	AddWorktree(ctx context.Context, path, branch string) error
 	RemoveWorktree(ctx context.Context, path string) error
+	Dirty(ctx context.Context, path string) (bool, error)
+	// AheadBehind returns commits ahead and commits behind the worktree's
+	// upstream (in that order). Returns (0, 0, nil) when no upstream is set.
+	AheadBehind(ctx context.Context, path string) (int, int, error)
+	// LastCommit returns HEAD's timestamp and subject for the worktree at path.
+	LastCommit(ctx context.Context, path string) (time.Time, string, error)
+	// MainRoot returns the absolute path of the main worktree of the repo.
+	MainRoot(ctx context.Context) (string, error)
 }
 
 // GH is the GitHub surface tower uses to read PR, review, and CI state.

@@ -20,12 +20,20 @@ type cliCtx struct {
 	workflow *workflow.Service
 }
 
+// setup wires the store, observers, and workflow service. The state DB
+// always lives in the main worktree's .tower/, regardless of which
+// worktree the user invoked tower from.
 func setup(ctx context.Context) (*cliCtx, func(), error) {
-	repo, err := repoRoot(ctx)
+	cwdRepo, err := repoTopLevel(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	dbPath := filepath.Join(repo, ".tower", "state.db")
+	git := observe.NewGit(cwdRepo)
+	mainRoot, err := git.MainRoot(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("locate main worktree: %w", err)
+	}
+	dbPath := filepath.Join(mainRoot, ".tower", "state.db")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("create state dir: %w", err)
 	}
@@ -33,15 +41,15 @@ func setup(ctx context.Context) (*cliCtx, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open store: %w", err)
 	}
-	git := observe.NewGit(repo)
-	gh := observe.NewGH(repo)
-	ref := refresh.New(s, gh)
-	wf := workflow.New(workflow.Config{Repo: repo}, s, git, ref)
+	mainGit := observe.NewGit(mainRoot)
+	gh := observe.NewGH(mainRoot)
+	ref := refresh.New(s, mainGit, gh)
+	wf := workflow.New(workflow.Config{Repo: mainRoot}, s, mainGit, ref)
 	cleanup := func() { _ = s.Close() }
-	return &cliCtx{repo: repo, store: s, workflow: wf}, cleanup, nil
+	return &cliCtx{repo: mainRoot, store: s, workflow: wf}, cleanup, nil
 }
 
-func repoRoot(ctx context.Context) (string, error) {
+func repoTopLevel(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)

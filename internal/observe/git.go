@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // GitObserver implements Git by shelling out to the local git binary.
@@ -42,6 +45,81 @@ func (g *GitObserver) RemoveWorktree(ctx context.Context, path string) error {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
 	return nil
+}
+
+// Dirty reports whether the worktree at path has uncommitted changes.
+func (g *GitObserver) Dirty(ctx context.Context, path string) (bool, error) {
+	out, err := g.Runner.Run(ctx, path, "git", "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// AheadBehind returns commits ahead and behind the worktree's upstream.
+// Tries @{u} first, falls back to origin/HEAD; returns (0, 0, nil) if neither resolves.
+func (g *GitObserver) AheadBehind(ctx context.Context, path string) (int, int, error) {
+	for _, base := range []string{"@{u}", "origin/HEAD"} {
+		a, b, ok := g.tryAheadBehind(ctx, path, base)
+		if ok {
+			return a, b, nil
+		}
+	}
+	return 0, 0, nil
+}
+
+func (g *GitObserver) tryAheadBehind(ctx context.Context, path, base string) (int, int, bool) {
+	out, err := g.Runner.Run(ctx, path, "git", "rev-list", "--left-right", "--count", base+"...HEAD")
+	if err != nil {
+		return 0, 0, false
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	behind, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	ahead, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return ahead, behind, true
+}
+
+// LastCommit returns the timestamp and subject of HEAD for the worktree at path.
+func (g *GitObserver) LastCommit(ctx context.Context, path string) (time.Time, string, error) {
+	out, err := g.Runner.Run(ctx, path, "git", "log", "-1", "--format=%ct%n%s")
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("git log: %w", err)
+	}
+	lines := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(lines) == 0 || lines[0] == "" {
+		return time.Time{}, "", nil
+	}
+	ts, err := strconv.ParseInt(lines[0], 10, 64)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("parse timestamp %q: %w", lines[0], err)
+	}
+	subject := ""
+	if len(lines) > 1 {
+		subject = lines[1]
+	}
+	return time.Unix(ts, 0).UTC(), subject, nil
+}
+
+// MainRoot returns the absolute path of the main worktree of the repo.
+// The first entry from `git worktree list --porcelain` is always the main worktree.
+func (g *GitObserver) MainRoot(ctx context.Context) (string, error) {
+	wts, err := g.Worktrees(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(wts) == 0 {
+		return "", errors.New("no worktrees found")
+	}
+	return wts[0].Path, nil
 }
 
 func parseWorktreeList(data []byte) ([]Worktree, error) {

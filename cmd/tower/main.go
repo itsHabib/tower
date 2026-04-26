@@ -22,18 +22,18 @@ func run(args []string) error {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "discover":
-		return cmdDiscover(rest)
 	case "add":
 		return cmdAdd(rest)
 	case "rm":
 		return cmdRm(rest)
-	case "sync":
-		return cmdSync(rest)
 	case "ls":
 		return cmdLs(rest)
 	case "open":
 		return cmdOpen(rest)
+	case "sync":
+		return cmdSync(rest)
+	case "reconcile":
+		return cmdReconcile(rest)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -54,18 +54,19 @@ func openTUI() error {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, `tower — control tower for parallel agentic PR work
+	fmt.Fprintln(os.Stderr, `tower — manage parallel git worktrees
 
 usage: tower <command> [args...]
 
 commands:
-  discover [-d <dir>]   scan task markdown files (default: features/)
-  add <id>              create worktree at .worktrees/<id> on branch tower/<id>
-  rm <id>               remove worktree, mark task abandoned
-  sync                  refresh PR / review / CI state from GitHub
-  ls                    list tasks with status
-  open <id>             print worktree path (use: cd $(tower open <id>))
-  help                  this message
+  add <name>       create a worktree at .worktrees/<name> on branch tower/<name>
+                   (a name with a slash is used as the full branch ref)
+  rm <name>        tear down the worktree for the named branch
+  ls               list tracked worktrees with status
+  open <name>      print worktree path (use: cd $(tower open <name>))
+  sync             reconcile from git + refresh PR / review / CI from GitHub
+  reconcile        reconcile from git only (no network)
+  help             this message
 
 run with no args to open the TUI.`)
 }
