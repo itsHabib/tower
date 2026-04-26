@@ -16,14 +16,42 @@ func TestSummarizeChecksEmpty(t *testing.T) {
 
 func TestSummarizeChecksMixed(t *testing.T) {
 	checks := []domain.CICheck{
-		{Conclusion: domain.CISuccess},
-		{Conclusion: domain.CISuccess},
-		{Conclusion: domain.CIFailure},
-		{Conclusion: domain.CIPending},
+		{Name: "build", Conclusion: domain.CISuccess},
+		{Name: "lint", Conclusion: domain.CISuccess},
+		{Name: "test", Conclusion: domain.CIFailure},
+		{Name: "deploy", Conclusion: domain.CIPending},
 	}
 	got := SummarizeChecks(checks)
-	if !strings.Contains(got, "2 ok") || !strings.Contains(got, "1 fail") || !strings.Contains(got, "1 pending") {
+	if !strings.Contains(got, "2 ok") || !strings.Contains(got, "1 pending") {
 		t.Fatalf("missing parts: %q", got)
+	}
+	if !strings.Contains(got, "fail (test)") {
+		t.Fatalf("expected failure name inline: %q", got)
+	}
+}
+
+func TestSummarizeChecksManyFailures(t *testing.T) {
+	checks := []domain.CICheck{
+		{Name: "a", Conclusion: domain.CIFailure},
+		{Name: "b", Conclusion: domain.CIFailure},
+		{Name: "c", Conclusion: domain.CIFailure},
+		{Name: "d", Conclusion: domain.CIFailure},
+	}
+	got := SummarizeChecks(checks)
+	if got != "4 fail" {
+		t.Fatalf("with >3 failures should drop names: %q", got)
+	}
+}
+
+func TestSummarizeChecksThreeFailures(t *testing.T) {
+	checks := []domain.CICheck{
+		{Name: "a", Conclusion: domain.CIFailure},
+		{Name: "b", Conclusion: domain.CIFailure},
+		{Name: "c", Conclusion: domain.CIFailure},
+	}
+	got := SummarizeChecks(checks)
+	if got != "3 fail (a, b, c)" {
+		t.Fatalf("threshold of 3 should still list: %q", got)
 	}
 }
 

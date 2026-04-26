@@ -124,14 +124,20 @@ func SortRowData(rows []RowData, mode SortMode) {
 	}
 }
 
-// SummarizeChecks renders a one-line summary of CI check outcomes.
+// SummarizeChecks renders a one-line summary of CI check outcomes. When
+// there are 3 or fewer failures, their check names are shown instead of
+// just a count, so triage doesn't require a second click.
 func SummarizeChecks(checks []domain.CICheck) string {
 	if len(checks) == 0 {
 		return "-"
 	}
 	counts := map[domain.CIConclusion]int{}
+	var failed []string
 	for _, c := range checks {
 		counts[c.Conclusion]++
+		if c.Conclusion == domain.CIFailure {
+			failed = append(failed, c.Name)
+		}
 	}
 	order := []struct {
 		conc  domain.CIConclusion
@@ -145,9 +151,15 @@ func SummarizeChecks(checks []domain.CICheck) string {
 	}
 	parts := make([]string, 0, len(order))
 	for _, o := range order {
-		if counts[o.conc] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[o.conc], o.label))
+		n := counts[o.conc]
+		if n == 0 {
+			continue
 		}
+		seg := fmt.Sprintf("%d %s", n, o.label)
+		if o.conc == domain.CIFailure && len(failed) > 0 && len(failed) <= 3 {
+			seg = fmt.Sprintf("%d fail (%s)", n, strings.Join(failed, ", "))
+		}
+		parts = append(parts, seg)
 	}
 	return strings.Join(parts, " · ")
 }

@@ -369,11 +369,12 @@ func lastSummary(wt domain.Worktree) string {
 func cmdOpen(args []string) error {
 	fs := flag.NewFlagSet("open", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo name (required if name is ambiguous)")
+	prFlag := fs.Bool("pr", false, "open the PR for this worktree in your browser")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("usage: tower open <name> [--repo <repo>]")
+		return errors.New("usage: tower open <name> [--repo <repo>] [--pr]")
 	}
 	name := fs.Arg(0)
 
@@ -390,6 +391,16 @@ func cmdOpen(args []string) error {
 	}
 	if wt == nil {
 		return fmt.Errorf("no worktree found for %q", name)
+	}
+	if *prFlag {
+		pr, err := c.store.GetPullRequest(ctx, wt.Repo, wt.Branch)
+		if err != nil {
+			return err
+		}
+		if pr == nil || pr.URL == "" {
+			return fmt.Errorf("no PR tracked for %s/%s (try `tower sync` first)", wt.Repo, wt.Branch)
+		}
+		return tui.OpenInBrowser(ctx, pr.URL)
 	}
 	fmt.Println(wt.Path)
 	return nil

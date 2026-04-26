@@ -256,6 +256,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openOnExit = m.rows[m.cursor].wt.Path
 			return m, tea.Quit
 		}
+	case "o":
+		m.openCursorPR()
 	}
 	return m, nil
+}
+
+func (m *Model) openCursorPR() {
+	if len(m.rows) == 0 {
+		return
+	}
+	pr := m.rows[m.cursor].pr
+	if pr == nil || pr.URL == "" {
+		return
+	}
+	if err := OpenInBrowser(m.ctx, pr.URL); err != nil {
+		m.err = err
+	}
 }
