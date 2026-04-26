@@ -105,3 +105,27 @@ func TestGitObserverWorktrees(t *testing.T) {
 		t.Fatalf("args: want %v got %v", wantArgs, r.last.args)
 	}
 }
+
+func TestAddWorktree(t *testing.T) {
+	r := &fakeRunner{}
+	g := &GitObserver{Repo: "/repo", Runner: r}
+	if err := g.AddWorktree(context.Background(), "/repo/.worktrees/x", "tower/x"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	wantArgs := []string{"worktree", "add", "-b", "tower/x", "/repo/.worktrees/x"}
+	if !reflect.DeepEqual(r.last.args, wantArgs) {
+		t.Fatalf("args: want %v got %v", wantArgs, r.last.args)
+	}
+}
+
+func TestRemoveWorktree(t *testing.T) {
+	r := &fakeRunner{}
+	g := &GitObserver{Repo: "/repo", Runner: r}
+	if err := g.RemoveWorktree(context.Background(), "/repo/.worktrees/x"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	wantArgs := []string{"worktree", "remove", "/repo/.worktrees/x"}
+	if !reflect.DeepEqual(r.last.args, wantArgs) {
+		t.Fatalf("args: want %v got %v", wantArgs, r.last.args)
+	}
+}

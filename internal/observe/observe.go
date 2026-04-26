@@ -18,6 +18,8 @@ type Worktree struct {
 
 type Git interface {
 	Worktrees(ctx context.Context) ([]Worktree, error)
+	AddWorktree(ctx context.Context, path, branch string) error
+	RemoveWorktree(ctx context.Context, path string) error
 }
 
 type GH interface {

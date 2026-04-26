@@ -10,12 +10,11 @@ import (
 
 type Service struct {
 	Store store.Store
-	Git   observe.Git
 	GH    observe.GH
 }
 
-func New(s store.Store, git observe.Git, gh observe.GH) *Service {
-	return &Service{Store: s, Git: git, GH: gh}
+func New(s store.Store, gh observe.GH) *Service {
+	return &Service{Store: s, GH: gh}
 }
 
 func (s *Service) Task(ctx context.Context, taskID string) error {

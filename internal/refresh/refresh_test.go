@@ -8,18 +8,8 @@ import (
 	"time"
 
 	"github.com/itsHabib/tower/internal/domain"
-	"github.com/itsHabib/tower/internal/observe"
 	"github.com/itsHabib/tower/internal/store"
 )
-
-type fakeGit struct {
-	worktrees []observe.Worktree
-	err       error
-}
-
-func (f *fakeGit) Worktrees(_ context.Context) ([]observe.Worktree, error) {
-	return f.worktrees, f.err
-}
 
 type fakeGH struct {
 	prByBranch map[string]*domain.PullRequest
@@ -91,7 +81,7 @@ func TestTaskNoWorktree(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	svc := New(s, &fakeGit{}, &fakeGH{})
+	svc := New(s, &fakeGH{})
 	if err := svc.Task(context.Background(), "t1"); err != nil {
 		t.Fatalf("task: %v", err)
 	}
@@ -104,7 +94,7 @@ func TestTaskNoWorktree(t *testing.T) {
 func TestTaskNoPR(t *testing.T) {
 	s := newStore(t)
 	seedTaskWithWorktree(t, s, "t1", "tower/t1")
-	svc := New(s, &fakeGit{}, &fakeGH{prByBranch: map[string]*domain.PullRequest{}})
+	svc := New(s, &fakeGH{prByBranch: map[string]*domain.PullRequest{}})
 	if err := svc.Task(context.Background(), "t1"); err != nil {
 		t.Fatalf("task: %v", err)
 	}
@@ -136,7 +126,7 @@ func TestTaskFullPath(t *testing.T) {
 			},
 		},
 	}
-	svc := New(s, &fakeGit{}, gh)
+	svc := New(s, gh)
 	if err := svc.Task(context.Background(), "t1"); err != nil {
 		t.Fatalf("task: %v", err)
 	}
@@ -176,7 +166,7 @@ func TestAllAggregatesErrors(t *testing.T) {
 	}
 	gh.checkErr = errors.New("simulated checks failure")
 
-	svc := New(s, &fakeGit{}, gh)
+	svc := New(s, gh)
 	res, err := svc.All(context.Background())
 	if err != nil {
 		t.Fatalf("all: %v", err)

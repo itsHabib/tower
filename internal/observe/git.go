@@ -25,6 +25,20 @@ func (g *GitObserver) Worktrees(ctx context.Context) ([]Worktree, error) {
 	return parseWorktreeList(out)
 }
 
+func (g *GitObserver) AddWorktree(ctx context.Context, path, branch string) error {
+	if _, err := g.Runner.Run(ctx, g.Repo, "git", "worktree", "add", "-b", branch, path); err != nil {
+		return fmt.Errorf("git worktree add: %w", err)
+	}
+	return nil
+}
+
+func (g *GitObserver) RemoveWorktree(ctx context.Context, path string) error {
+	if _, err := g.Runner.Run(ctx, g.Repo, "git", "worktree", "remove", path); err != nil {
+		return fmt.Errorf("git worktree remove: %w", err)
+	}
+	return nil
+}
+
 func parseWorktreeList(data []byte) ([]Worktree, error) {
 	var out []Worktree
 	var cur Worktree
