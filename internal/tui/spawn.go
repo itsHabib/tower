@@ -25,9 +25,15 @@ func SpawnClaudeWithNewWorktree(ctx context.Context, repoPath, name, prompt stri
 	}
 	switch runtime.GOOS {
 	case "windows":
+		// Wrap in `cmd /k` so PATHEXT resolution kicks in — `claude` on
+		// Windows is typically claude.cmd (an npm shim), and wt itself
+		// doesn't honor PATHEXT, so a bare `wt nt … claude …` fails
+		// with file-not-found. /k (vs /c) keeps the tab open after
+		// claude exits so users can scroll back through the session.
+		inner := "cmd /k " + cmdLine
 		// Pass the command as a single argv element so wt treats the
-		// trailing `-w` as claude's flag, not its own window selector.
-		cmd := exec.CommandContext(ctx, "wt", "nt", "-d", repoPath, cmdLine)
+		// flags inside as belonging to cmd/claude, not to wt itself.
+		cmd := exec.CommandContext(ctx, "wt", "nt", "-d", repoPath, inner)
 		return cmd.Start()
 	default:
 		return fmt.Errorf("spawn claude with worktree not yet supported on %s", runtime.GOOS)

@@ -5,7 +5,11 @@ package refresh
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/itsHabib/tower/internal/domain"
@@ -36,21 +40,36 @@ func New(s store.Store, git GitFactory, gh GHFactory) *Service {
 }
 
 // Reconcile syncs the worktree set across every registered repo.
+// Per-repo failures (typically a registered path that no longer
+// exists on disk) are collected and returned together so one stale
+// registration doesn't blank out the whole board.
 func (s *Service) Reconcile(ctx context.Context) error {
 	repos, err := s.Store.ListRepos(ctx)
 	if err != nil {
 		return fmt.Errorf("list repos: %w", err)
 	}
+	var failures []string
 	for _, r := range repos {
 		if err := s.ReconcileRepo(ctx, r); err != nil {
-			return fmt.Errorf("reconcile %s: %w", r.Name, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", r.Name, err))
 		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("reconcile: %d repo(s) failed: %s. clean up with `tower repo prune`",
+			len(failures), strings.Join(failures, "; "))
 	}
 	return nil
 }
 
 // ReconcileRepo syncs the worktree set for one repo.
 func (s *Service) ReconcileRepo(ctx context.Context, repo domain.Repo) error {
+	// Cheap up-front check: if the registered path is gone from
+	// disk, skip cleanly with a typed error so the caller can decide
+	// what to do (Reconcile aggregates these and points users at
+	// `tower repo prune`).
+	if _, err := os.Stat(repo.Path); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("registered path missing on disk: %s", repo.Path)
+	}
 	git := s.Git(repo.Path)
 	live, err := git.Worktrees(ctx)
 	if err != nil {

@@ -3,6 +3,7 @@ package refresh
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -77,12 +78,21 @@ func newStore(t *testing.T) store.Store {
 	return s
 }
 
-func mustRepo(t *testing.T, s store.Store, name, path string) {
+// mustRepo registers a repo whose Path is a real directory under
+// t.TempDir() so the path-existence check in ReconcileRepo passes.
+// The fake git layer still serves whatever worktree paths the test
+// configures — those don't need to exist.
+func mustRepo(t *testing.T, s store.Store, name string) string {
 	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := s.UpsertRepo(context.Background(), domain.Repo{Name: name, Path: path, CreatedAt: now}); err != nil {
+	if err := s.UpsertRepo(context.Background(), domain.Repo{Name: name, Path: dir, CreatedAt: now}); err != nil {
 		t.Fatalf("upsert repo: %v", err)
 	}
+	return dir
 }
 
 // gitFor returns a factory that always serves the given fake regardless of path.
@@ -93,14 +103,14 @@ func ghFor(h *fakeGH) GHFactory { return func(_ string) observe.GH { return h } 
 
 func TestReconcileAcrossRepos(t *testing.T) {
 	s := newStore(t)
-	mustRepo(t, s, "orchestra", "/o")
-	mustRepo(t, s, "roxiq", "/r")
+	oPath := mustRepo(t, s, "orchestra")
+	rPath := mustRepo(t, s, "roxiq")
 
 	gits := map[string]*fakeGit{
-		"/o": {worktrees: []observe.Worktree{{Path: "/o", HEAD: "1", Branch: "main"}}},
-		"/r": {worktrees: []observe.Worktree{
-			{Path: "/r", HEAD: "2", Branch: "main"},
-			{Path: "/r/.worktrees/feat", HEAD: "3", Branch: "tower/feat"},
+		oPath: {worktrees: []observe.Worktree{{Path: oPath, HEAD: "1", Branch: "main"}}},
+		rPath: {worktrees: []observe.Worktree{
+			{Path: rPath, HEAD: "2", Branch: "main"},
+			{Path: filepath.Join(rPath, ".worktrees", "feat"), HEAD: "3", Branch: "tower/feat"},
 		}},
 	}
 	svc := New(s, func(p string) observe.Git { return gits[p] }, ghFor(&fakeGH{}))
@@ -121,14 +131,15 @@ func TestReconcileAcrossRepos(t *testing.T) {
 
 func TestReconcileRepoEnrichment(t *testing.T) {
 	s := newStore(t)
-	mustRepo(t, s, "o", "/o")
+	mustRepo(t, s, "o")
+	wtX := "/o/.worktrees/x" // arbitrary string the fake serves; not stat'd
 	g := &fakeGit{
-		worktrees:  []observe.Worktree{{Path: "/o/.worktrees/x", HEAD: "h", Branch: "tower/x"}},
-		dirty:      map[string]bool{"/o/.worktrees/x": true},
-		ahead:      map[string]int{"/o/.worktrees/x": 4},
-		behind:     map[string]int{"/o/.worktrees/x": 1},
-		lastCommit: map[string]time.Time{"/o/.worktrees/x": time.Unix(1700000000, 0).UTC()},
-		title:      map[string]string{"/o/.worktrees/x": "wip"},
+		worktrees:  []observe.Worktree{{Path: wtX, HEAD: "h", Branch: "tower/x"}},
+		dirty:      map[string]bool{wtX: true},
+		ahead:      map[string]int{wtX: 4},
+		behind:     map[string]int{wtX: 1},
+		lastCommit: map[string]time.Time{wtX: time.Unix(1700000000, 0).UTC()},
+		title:      map[string]string{wtX: "wip"},
 	}
 	svc := New(s, gitFor(g), ghFor(&fakeGH{}))
 	if err := svc.Reconcile(context.Background()); err != nil {
@@ -142,7 +153,7 @@ func TestReconcileRepoEnrichment(t *testing.T) {
 
 func TestReconcileRepoDeletesStale(t *testing.T) {
 	s := newStore(t)
-	mustRepo(t, s, "o", "/o")
+	mustRepo(t, s, "o")
 	now := time.Now().UTC().Truncate(time.Second)
 	_ = s.UpsertWorktree(context.Background(), domain.Worktree{
 		Repo: "o", Branch: "tower/old", Path: "/o/.worktrees/old", CreatedAt: now, LastSeen: now,
@@ -160,7 +171,7 @@ func TestReconcileRepoDeletesStale(t *testing.T) {
 
 func TestBranchScopesRepoOnRecords(t *testing.T) {
 	s := newStore(t)
-	mustRepo(t, s, "o", "/o")
+	mustRepo(t, s, "o")
 	now := time.Now().UTC().Truncate(time.Second)
 	_ = s.UpsertWorktree(context.Background(), domain.Worktree{
 		Repo: "o", Branch: "tower/x", Path: "/p", CreatedAt: now, LastSeen: now,
@@ -192,4 +203,54 @@ func TestBranchScopesRepoOnRecords(t *testing.T) {
 	if len(checks) != 1 || checks[0].Repo != "o" {
 		t.Fatalf("check repo not scoped: %+v", checks)
 	}
+}
+
+// One stale registration (path missing on disk) shouldn't block the
+// reconcile of every other repo. The error is reported but the live
+// repo's worktrees still land in the store.
+func TestReconcileSkipsMissingRepoButStillReconcilesOthers(t *testing.T) {
+	s := newStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertRepo(context.Background(), domain.Repo{
+		Name: "ghost", Path: "/definitely/not/here", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	livePath := mustRepo(t, s, "live")
+
+	gits := map[string]*fakeGit{
+		livePath: {worktrees: []observe.Worktree{{Path: livePath, HEAD: "1", Branch: "main"}}},
+	}
+	svc := New(s, func(p string) observe.Git {
+		if g, ok := gits[p]; ok {
+			return g
+		}
+		return &fakeGit{worktreeErr: errors.New("unreachable: stat should have caught it first")}
+	}, ghFor(&fakeGH{}))
+
+	err := svc.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("want error reporting the missing repo, got nil")
+	}
+	if !contains(err.Error(), "ghost") || !contains(err.Error(), "missing on disk") {
+		t.Fatalf("error should name the missing repo: %v", err)
+	}
+	if !contains(err.Error(), "tower repo prune") {
+		t.Fatalf("error should hint at prune: %v", err)
+	}
+
+	// Live repo should still be reconciled.
+	worktrees, _ := s.ListWorktreesForRepo(context.Background(), "live")
+	if len(worktrees) != 1 {
+		t.Fatalf("live repo should be reconciled despite ghost failure; got %d worktrees", len(worktrees))
+	}
+}
+
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }
