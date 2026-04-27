@@ -51,9 +51,6 @@ func Run(ctx context.Context, wf *workflow.Service, s store.Store) error {
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
-	if m.openOnExit != "" {
-		fmt.Println(m.openOnExit)
-	}
 	return nil
 }
 
@@ -84,40 +81,33 @@ type Model struct {
 	noRepos     bool
 	width       int
 	height      int
-	openOnExit  string
 	helpVisible bool
+	detailRow   *worktreeRow // when non-nil, render the detail panel for this row
+	selected    map[wtKey]bool
 	input       inputMode
 	inputBuf    string
 	inputTarget worktreeRow
-	stagedName  string      // carried between inputClaudeName and inputClaudePrompt
-	spawnTarget SpawnTarget // chosen during inputClaudeSpawnMode
 }
+
+// wtKey identifies a worktree row across reloads — same (repo, branch)
+// always refers to the same logical row, even if the slice index
+// shifts on a refresh.
+type wtKey struct{ repo, branch string }
+
+func keyOf(r worktreeRow) wtKey { return wtKey{r.wt.Repo, r.wt.Branch} }
 
 // inputMode tracks which prompt is currently collecting input from the
 // user. Filter has its own field because it's a persistent display
 // mode; the others are one-shot prompts that act on enter.
 type inputMode int
 
-// Input modes for one-shot prompts (a/R/d/c). inputNone = no prompt active.
+// Input modes for one-shot prompts (a/r/d/D). inputNone = no prompt active.
 const (
-	inputNone            inputMode = iota
-	inputAddName                   // typing a name for `a` (new tower-style worktree)
-	inputAddRepoPath               // typing a path for `R` (register a repo)
-	inputClaudeSpawnMode           // picking [t]erminal / [b]ackground for `c`
-	inputClaudeName                // typing a worktree name for `c`
-	inputClaudePrompt              // typing optional initial prompt for `c`
-	inputConfirmDelete             // showing y/N confirmation for `d`
-)
-
-// SpawnTarget controls where a claude session runs after `c` spawn.
-type SpawnTarget int
-
-// Spawn targets: terminal opens a new tab and chats interactively;
-// background runs headless via `claude -p` and detaches from this
-// process so the session keeps running if you quit tower.
-const (
-	SpawnTerminal SpawnTarget = iota
-	SpawnBackground
+	inputNone               inputMode = iota
+	inputAddName                      // typing a name for `a` (new tower-style worktree)
+	inputAddRepoPath                  // typing a path for `r` (register a repo)
+	inputConfirmDelete                // showing y/N confirmation for `d` (single)
+	inputConfirmDeleteMulti           // showing y/N confirmation for `D` (selected)
 )
 
 type worktreeRow struct {
@@ -126,6 +116,20 @@ type worktreeRow struct {
 	reviews  []domain.Review
 	checks   []domain.CICheck
 	priority Priority
+}
+
+// repoRow is the one-row-per-repo summary rendered in grouped view.
+// It aggregates over the worktrees the user can currently see (so it
+// respects the active filter).
+type repoRow struct {
+	name        string
+	path        string
+	worktrees   int
+	dirty       int
+	openPRs     int
+	failingCI   int
+	lastCommit  time.Time
+	priority    Priority
 }
 
 func newModel(ctx context.Context, wf *workflow.Service, s store.Store) *Model {
@@ -166,6 +170,21 @@ type addedMsg struct {
 
 type removedMsg struct{ err error }
 
+// removedManyMsg is the result of a bulk delete (`D`).
+//   - removed: worktrees actually torn down (this includes rows where
+//     the branch was kept due to unmerged commits — the *worktree* is
+//     still gone, which is what the user asked for).
+//   - branchKept: subset of `removed` where `git branch -d` was
+//     refused. Surfaced separately so the user knows the branches are
+//     still there if they want to force-delete them.
+//   - failures: per-row errors that prevented even the worktree from
+//     being removed. Keyed by "<repo>/<branch>".
+type removedManyMsg struct {
+	removed    int
+	branchKept int
+	failures   map[string]error
+}
+
 type repoAddedMsg struct {
 	repo *domain.Repo
 	err  error
@@ -188,6 +207,34 @@ func removeCmd(ctx context.Context, wf *workflow.Service, repoName, name string,
 			dbg.Printf("removeCmd: wf.Remove returned nil (success)")
 		}
 		return removedMsg{err: err}
+	}
+}
+
+// removeManyCmd tears down each row in `targets` sequentially, passing
+// --force when the row was dirty (the user already saw the count and
+// confirmed). Per-row failures don't abort the batch — they aggregate
+// into removedManyMsg.failures so partial successes still surface.
+//
+// ErrBranchKeptUnmerged is treated as success-with-caveat: the
+// worktree IS gone (the user's intent), only the branch ref remains.
+// We bump both `removed` and `branchKept` so the summary can mention
+// both numbers.
+func removeManyCmd(ctx context.Context, wf *workflow.Service, targets []worktreeRow) tea.Cmd {
+	return func() tea.Msg {
+		out := removedManyMsg{failures: map[string]error{}}
+		for _, t := range targets {
+			err := wf.Remove(ctx, t.wt.Repo, t.wt.Branch, t.wt.Dirty)
+			switch {
+			case err == nil:
+				out.removed++
+			case errors.Is(err, workflow.ErrBranchKeptUnmerged):
+				out.removed++
+				out.branchKept++
+			default:
+				out.failures[t.wt.Repo+"/"+t.wt.Branch] = err
+			}
+		}
+		return out
 	}
 }
 
@@ -298,10 +345,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		}
-		if m.cursor >= len(m.rows) && len(m.rows) > 0 {
-			m.cursor = len(m.rows) - 1
+		n := m.visibleCount()
+		if m.cursor >= n && n > 0 {
+			m.cursor = n - 1
 		}
-		if len(m.rows) == 0 {
+		if n == 0 {
 			m.cursor = 0
 		}
 		return m, nil
@@ -324,6 +372,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case removedMsg:
 		dbg.Printf("Update: removedMsg arrived (err=%v)", msg.err)
 		return m.afterMutation(msg.err)
+	case removedManyMsg:
+		dbg.Printf("Update: removedManyMsg removed=%d branchKept=%d failures=%d", msg.removed, msg.branchKept, len(msg.failures))
+		// Clear selections for everything the worktree-remove succeeded
+		// on (clean removes AND branch-kept). Those rows are gone from
+		// the board either way; the leftover marks should only point
+		// at rows that genuinely didn't go through.
+		for k := range m.selected {
+			if _, failed := msg.failures[k.repo+"/"+k.branch]; !failed {
+				delete(m.selected, k)
+			}
+		}
+		summary := fmt.Sprintf("removed %d worktrees", msg.removed)
+		if msg.branchKept > 0 {
+			summary += fmt.Sprintf(" (%d unmerged branch refs kept; `git branch -D` to discard)", msg.branchKept)
+		}
+		if len(msg.failures) == 0 {
+			m.err = nil
+			m.info = summary
+		} else {
+			var first error
+			for _, e := range msg.failures {
+				first = e
+				break
+			}
+			m.err = fmt.Errorf("%s; %d failed: %s", summary, len(msg.failures), firstLine(first))
+			m.info = ""
+		}
+		return m, loadCmd(m.ctx, m.workflow, m.store)
 	case repoAddedMsg:
 		m.info = ""
 		if msg.err != nil {
@@ -363,6 +439,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.detailRow != nil {
+		return m.handleDetailKey(msg)
+	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}
@@ -375,11 +454,30 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.handleActionKey(msg)
 }
 
+// handleDetailKey is the only handler that runs while the detail panel
+// is up: esc / q / enter dismisses it; o opens the row's PR if any
+// (mirrors the top-level `o`); ctrl+c still quits the program.
+func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q", "enter":
+		m.detailRow = nil
+	case "o":
+		if m.detailRow != nil && m.detailRow.pr != nil && m.detailRow.pr.URL != "" {
+			if err := OpenInBrowser(m.ctx, m.detailRow.pr.URL); err != nil {
+				m.err = err
+			}
+		}
+	}
+	return m, nil
+}
+
 func (m *Model) handleNavKey(msg tea.KeyMsg) bool {
-	visible := m.visibleRows()
+	n := m.visibleCount()
 	switch msg.String() {
 	case "j", "down":
-		if m.cursor < len(visible)-1 {
+		if m.cursor < n-1 {
 			m.cursor++
 		}
 	case "k", "up":
@@ -390,11 +488,22 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) bool {
 		m.filtering = true
 	case "esc":
 		m.filter = ""
+		m.selected = nil
 		m.cursor = 0
 	default:
 		return false
 	}
 	return true
+}
+
+// visibleCount returns the number of rows currently rendered in the
+// body — repos in grouped mode, worktrees in flat mode. Used to bound
+// the cursor.
+func (m *Model) visibleCount() int {
+	if m.mode == ViewGrouped {
+		return len(m.visibleRepos())
+	}
+	return len(m.visibleRows())
 }
 
 func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -412,17 +521,35 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ViewFlat
 		} else {
 			m.mode = ViewGrouped
+			// Selection is a flat-view concept; drop it on the way to
+			// grouped so it doesn't silently apply to a [D] later.
+			m.selected = nil
 		}
+		m.cursor = 0
+	case " ":
+		m.toggleSelectionAtCursor()
+	case "D":
+		return m.startMultiDeleteConfirm()
 	case "enter":
+		if m.mode == ViewGrouped {
+			repos := m.visibleRepos()
+			if len(repos) > 0 && m.cursor < len(repos) {
+				// Drill into the repo: switch to flat view, scope the
+				// filter to its name. Two registered repos can't share
+				// a name so this is unambiguous.
+				m.filter = repos[m.cursor].name
+				m.mode = ViewFlat
+				m.cursor = 0
+			}
+			return m, nil
+		}
 		visible := m.visibleRows()
-		if len(visible) > 0 {
-			m.openOnExit = visible[m.cursor].wt.Path
-			return m, tea.Quit
+		if len(visible) > 0 && m.cursor < len(visible) {
+			row := visible[m.cursor]
+			m.detailRow = &row
 		}
 	case "o":
 		m.openCursorPR()
-	case "c":
-		m.startClaudeSpawn()
 	case "a":
 		m.startAddName()
 	case "r":
@@ -476,7 +603,89 @@ func (m *Model) visibleRows() []worktreeRow {
 	return out
 }
 
+// visibleRepos aggregates the visible worktree rows into one row per
+// repo, in attention-priority order (max priority across that repo's
+// worktrees, most-recent activity as tiebreaker). Used to render the
+// grouped view as a one-row-per-repo summary.
+func (m *Model) visibleRepos() []repoRow {
+	rows := m.visibleRows()
+	byName := make(map[string]*repoRow, len(rows))
+	order := make([]string, 0, len(rows))
+	for _, r := range rows {
+		rr, ok := byName[r.wt.Repo]
+		if !ok {
+			rr = &repoRow{name: r.wt.Repo, path: m.repoPath(r.wt.Repo)}
+			byName[r.wt.Repo] = rr
+			order = append(order, r.wt.Repo)
+		}
+		rr.worktrees++
+		if r.wt.Dirty {
+			rr.dirty++
+		}
+		if r.pr != nil && r.pr.State == domain.PRStateOpen {
+			rr.openPRs++
+		}
+		for _, c := range r.checks {
+			if c.Conclusion == domain.CIFailure {
+				rr.failingCI++
+				break
+			}
+		}
+		if r.wt.LastCommit.After(rr.lastCommit) {
+			rr.lastCommit = r.wt.LastCommit
+		}
+		if r.priority > rr.priority {
+			rr.priority = r.priority
+		}
+	}
+	out := make([]repoRow, 0, len(order))
+	for _, n := range order {
+		out = append(out, *byName[n])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].priority != out[j].priority {
+			return out[i].priority > out[j].priority
+		}
+		return out[i].lastCommit.After(out[j].lastCommit)
+	})
+	return out
+}
+
+// repoPath returns the registered path for repo name, or "" if not
+// found. The repos slice is small (handful of entries) so a linear
+// scan is fine.
+func (m *Model) repoPath(name string) string {
+	for _, r := range m.repos {
+		if r.Name == name {
+			return r.Path
+		}
+	}
+	return ""
+}
+
+// cursorPath returns the on-disk path for whatever the cursor points
+// at: a worktree path in flat view, the repo's registered path in
+// grouped view. Empty if there's nothing under the cursor.
+func (m *Model) cursorPath() string {
+	if m.mode == ViewGrouped {
+		repos := m.visibleRepos()
+		if m.cursor >= 0 && m.cursor < len(repos) {
+			return repos[m.cursor].path
+		}
+		return ""
+	}
+	visible := m.visibleRows()
+	if m.cursor >= 0 && m.cursor < len(visible) {
+		return visible[m.cursor].wt.Path
+	}
+	return ""
+}
+
 func (m *Model) openCursorPR() {
+	if m.mode == ViewGrouped {
+		m.err = errors.New("o opens a PR — drill into the repo (enter) or switch to flat view (g) and pick a worktree")
+		return
+	}
 	visible := m.visibleRows()
 	if len(visible) == 0 {
 		return
@@ -494,13 +703,24 @@ func (m *Model) openCursorPR() {
 // cursor row; if the board is empty, falls back to the only registered
 // repo (so you can bootstrap from zero worktrees) and errors otherwise.
 func (m *Model) startAddName() {
-	visible := m.visibleRows()
-	if len(visible) > 0 {
-		m.inputTarget = visible[m.cursor]
-		m.input = inputAddName
-		m.inputBuf = ""
-		m.err = nil
-		return
+	if m.mode == ViewGrouped {
+		repos := m.visibleRepos()
+		if len(repos) > 0 && m.cursor < len(repos) {
+			m.inputTarget = worktreeRow{wt: domain.Worktree{Repo: repos[m.cursor].name}}
+			m.input = inputAddName
+			m.inputBuf = ""
+			m.err = nil
+			return
+		}
+	} else {
+		visible := m.visibleRows()
+		if len(visible) > 0 {
+			m.inputTarget = visible[m.cursor]
+			m.input = inputAddName
+			m.inputBuf = ""
+			m.err = nil
+			return
+		}
 	}
 	switch len(m.repos) {
 	case 0:
@@ -524,26 +744,59 @@ func (m *Model) startAddRepoPath() {
 	m.err = nil
 }
 
-// startClaudeSpawn opens the prompt chain for `c`: pick spawn mode,
-// type a worktree name, type an optional initial prompt, then spawn.
-// Cursor row's repo is the parent for `claude -w`.
-func (m *Model) startClaudeSpawn() {
-	visible := m.visibleRows()
-	if len(visible) == 0 {
-		m.err = errors.New("no row to infer repo from")
+// toggleSelectionAtCursor flips the cursor row in the selection set.
+// Flat view only — selection is a worktree-level concept; in grouped
+// view the cursor points at a repo summary, which doesn't have a
+// (repo, branch) identity to toggle.
+func (m *Model) toggleSelectionAtCursor() {
+	if m.mode != ViewFlat {
+		m.err = errors.New("space (select) only works in flat view — press g first")
 		return
 	}
-	m.inputTarget = visible[m.cursor]
-	m.input = inputClaudeSpawnMode
-	m.inputBuf = ""
-	m.stagedName = ""
+	visible := m.visibleRows()
+	if m.cursor < 0 || m.cursor >= len(visible) {
+		return
+	}
+	if m.selected == nil {
+		m.selected = map[wtKey]bool{}
+	}
+	k := keyOf(visible[m.cursor])
+	if m.selected[k] {
+		delete(m.selected, k)
+	} else {
+		m.selected[k] = true
+	}
+	// Advance cursor so holding space sweeps down a list.
+	if m.cursor < len(visible)-1 {
+		m.cursor++
+	}
+}
+
+// startMultiDeleteConfirm opens the y/N prompt for `D`. Captures the
+// currently-selected rows now (rather than at confirm time) so a
+// background reload can't shift the snapshot under the user.
+func (m *Model) startMultiDeleteConfirm() (tea.Model, tea.Cmd) {
+	if m.mode != ViewFlat {
+		m.err = errors.New("D (bulk delete) only works in flat view — press g first")
+		return m, nil
+	}
+	if len(m.selected) == 0 {
+		m.err = errors.New("nothing selected — press space on rows to mark them, then D")
+		return m, nil
+	}
+	m.input = inputConfirmDeleteMulti
 	m.err = nil
+	return m, nil
 }
 
 // startConfirmDelete opens the y/N confirmation for `d`. Refuses on
 // the main worktree of a repo (path equals repo's registered path) so
 // you can't accidentally tear down the primary checkout.
 func (m *Model) startConfirmDelete() {
+	if m.mode == ViewGrouped {
+		m.err = errors.New("d removes a worktree — drill into the repo (enter) or switch to flat view (g) and pick one")
+		return
+	}
 	dbg.Printf("startConfirmDelete: cursor=%d rows=%d filter=%q", m.cursor, len(m.rows), m.filter)
 	m.info = ""
 	visible := m.visibleRows()
@@ -589,26 +842,44 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.input {
 	case inputConfirmDelete:
 		return m.handleConfirmKey(msg)
-	case inputClaudeSpawnMode:
-		return m.handleSpawnModeKey(msg)
-	case inputNone, inputAddName, inputAddRepoPath, inputClaudeName, inputClaudePrompt:
+	case inputConfirmDeleteMulti:
+		return m.handleMultiConfirmKey(msg)
+	case inputNone, inputAddName, inputAddRepoPath:
 		return m.handleTextInputKey(msg)
 	}
 	return m, nil
 }
 
-func (m *Model) handleSpawnModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handleMultiConfirmKey is the y/N handler for `D` (bulk delete).
+// Snapshots the selected rows from the live row set at confirm time
+// so partial reloads can't leak rows in or out of the batch.
+func (m *Model) handleMultiConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "t", "T":
-		m.spawnTarget = SpawnTerminal
-		m.input = inputClaudeName
-	case "b", "B":
-		m.spawnTarget = SpawnBackground
-		m.input = inputClaudeName
-	case "esc":
+	case "y", "Y":
+		targets := m.selectedRowsSnapshot()
+		m.input = inputNone
+		if len(targets) == 0 {
+			m.err = errors.New("selection emptied before confirm")
+			return m, nil
+		}
+		return m, removeManyCmd(m.ctx, m.workflow, targets)
+	case "n", "N", "esc", "enter":
 		m.input = inputNone
 	}
 	return m, nil
+}
+
+// selectedRowsSnapshot returns the worktreeRows whose key is in the
+// selection set, scanning the live row set so the rows carry up-to-date
+// dirty/PR/etc. metadata.
+func (m *Model) selectedRowsSnapshot() []worktreeRow {
+	out := make([]worktreeRow, 0, len(m.selected))
+	for _, r := range m.rows {
+		if m.selected[keyOf(r)] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -639,7 +910,6 @@ func (m *Model) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.input = inputNone
 		m.inputBuf = ""
-		m.stagedName = ""
 	case tea.KeyEnter:
 		return m.executeTextInput()
 	case tea.KeyBackspace:
@@ -682,45 +952,7 @@ func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
 			path = top
 		}
 		return m, addRepoCmd(m.ctx, m.workflow, path)
-	case inputClaudeName:
-		if buf == "" {
-			m.input = inputNone
-			m.err = errors.New("name required")
-			return m, nil
-		}
-		// Move to the optional-prompt stage. Don't reset m.input yet.
-		m.stagedName = buf
-		m.input = inputClaudePrompt
-		return m, nil
-	case inputClaudePrompt:
-		if m.spawnTarget == SpawnBackground && buf == "" {
-			// Background mode needs a prompt — claude -p has nothing to do
-			// without one. Stay in the prompt stage so the user can retype.
-			m.err = errors.New("background spawn requires a prompt")
-			return m, nil
-		}
-		m.input = inputNone
-		repo, err := m.store.GetRepo(m.ctx, target.wt.Repo)
-		if err != nil {
-			m.err = err
-			return m, nil
-		}
-		if repo == nil {
-			m.err = errors.New("repo not found: " + target.wt.Repo)
-			return m, nil
-		}
-		var spawnErr error
-		switch m.spawnTarget {
-		case SpawnTerminal:
-			spawnErr = SpawnClaudeWithNewWorktree(m.ctx, repo.Path, m.stagedName, buf)
-		case SpawnBackground:
-			spawnErr = SpawnClaudeBackground(m.ctx, repo.Path, m.stagedName, buf)
-		}
-		if spawnErr != nil {
-			m.err = spawnErr
-		}
-		m.stagedName = ""
-	case inputNone, inputClaudeSpawnMode, inputConfirmDelete:
+	case inputNone, inputConfirmDelete:
 		// not reachable here (filtered by handleInputKey).
 	}
 	return m, nil
@@ -734,6 +966,21 @@ func gitTopLevel(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// firstLine returns the first newline-delimited line of err.Error(),
+// trimmed of trailing whitespace. Used to keep multi-line git stderr
+// (the "hint:" suffix on `git branch -d` failures, etc.) out of the
+// single-line error footer.
+func firstLine(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimRight(s, " \t\r")
 }
 
 // samePath reports whether two paths refer to the same directory on

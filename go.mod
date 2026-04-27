@@ -38,6 +38,7 @@ require (
 	github.com/ashanbrown/forbidigo/v2 v2.3.0 // indirect
 	github.com/ashanbrown/makezero/v2 v2.1.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
+	github.com/aymanbagabas/go-udiff v0.3.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bkielbasa/cyclop v1.2.3 // indirect
 	github.com/blizzy78/varnamelen v0.8.0 // indirect
@@ -51,9 +52,11 @@ require (
 	github.com/ccojocar/zxcvbn-go v1.0.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charithe/durationcheck v0.0.11 // indirect
-	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
+	github.com/charmbracelet/colorprofile v0.3.2 // indirect
 	github.com/charmbracelet/x/ansi v0.10.1 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13-0.20250311204145-2c3ea96c31dd // indirect
+	github.com/charmbracelet/x/exp/golden v0.0.0-20240806155701-69247e0abc2a // indirect
+	github.com/charmbracelet/x/exp/teatest v0.0.0-20260426004601-d5e63ff0b9ca // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/ckaznocha/intrange v0.3.1 // indirect
 	github.com/curioswitch/go-reassign v0.3.0 // indirect

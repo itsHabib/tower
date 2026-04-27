@@ -33,41 +33,40 @@ go test -tags=integration ./...
 
 What's covered:
 - `internal/tui/tui_e2e_test.go` — drives the bubbletea `Model`
-  through every keystroke flow (a / r / d/y / c+t+name+prompt) and
-  asserts both UI state and on-disk side effects.
+  directly via `Update(tea.KeyMsg{...})`. Bypasses the program loop, so
+  it's fast but doesn't exercise the renderer. Use it for action-flow
+  tests (a / r / d/y).
+- `internal/tui/tui_teatest_test.go` — drives the **full bubbletea
+  program loop** via [`teatest`][teatest]. Covers what the user
+  actually sees: rendered output, view transitions, drill-in flow.
+  Three patterns demonstrated — substring waits, FinalModel
+  inspection, and golden-file snapshots of the rendered view.
 - `cmd/tower/e2e_test.go` — runs the real `tower.exe` binary as a
   subprocess against a fresh repo: full add → ls → rm → re-add cycle,
   unmerged-branch warning path, MCP tool listing, MCP register/list.
 
-### 3. Real-spawn / external (env-gated)
+[teatest]: https://pkg.go.dev/github.com/charmbracelet/x/exp/teatest
 
-Tests that need an external resource that costs money, opens a window,
-or hits a remote service:
+### Updating golden files
 
-| Resource             | Env var to opt in       | Where               |
-|----------------------|-------------------------|---------------------|
-| Real `claude` binary | `TOWER_TEST_REAL_SPAWN` | (TODO — see below)  |
-| Anthropic API key    | `ANTHROPIC_API_KEY`     | (TODO)              |
-| GitHub token         | `GITHUB_TOKEN`          | (TODO)              |
+Snapshot tests under `internal/tui/testdata/` use `teatest.RequireEqualOutput`,
+which compares against `<TestName>.golden`. After an intentional view
+change, regenerate with:
 
-These should also use the `integration` tag so they're excluded from
-the default `go test`. They additionally `t.Skip()` when the env var
-isn't set.
+```bash
+go test -tags=integration -run TestTeatest_View_Snapshot ./internal/tui/... -args -update
+```
 
-> Pattern: `if os.Getenv("TOWER_TEST_REAL_SPAWN") == "" { t.Skip(...) }`
-
-The claude-spawn flow currently has a tier-2 test
-(`TestTUI_ClaudeSpawn_c_t_chain`) that walks the prompt chain up to
-the final Enter — pressing it would actually fork `wt`/`claude`. A
-real-spawn test that stubs `claude` on PATH and asserts argv is on the
-TODO list.
+Volatile fragments (temp paths, future timestamps) get scrubbed before
+comparison — see `scrubVolatile` in `tui_teatest_test.go`. Add to it
+if you introduce a new volatile bit.
 
 ## Manual testing in an isolated environment
 
-The setup script builds tower, spins up a throwaway git repo, points
-`APPDATA` at a sandbox dir, and prints the command to launch the TUI
-against it. Use it when poking at the TUI by hand — no risk of
-stomping your real tower state.
+The setup script builds tower, then runs `scripts/seed` to spin up
+~6 fake repos with ~23 worktrees in mixed state (clean / dirty /
+ahead-of-main, varied branch prefixes). State lands in a sandbox
+`APPDATA` so it can't touch your real tower state.
 
 ```powershell
 # PowerShell
@@ -81,6 +80,11 @@ bash scripts/setup-test-env.sh
 
 Output ends with the exact `APPDATA=... tower.exe` invocation you
 should run. Re-running the script wipes the previous sandbox.
+
+The fixture spec lives in `internal/playground/playground.go`
+(`Default`). Edit that variable to add repos / worktrees / states; both
+the sandbox script and any test that imports `internal/playground`
+pick up the change.
 
 ## Debug logging
 

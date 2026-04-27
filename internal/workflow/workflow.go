@@ -152,8 +152,12 @@ func (s *Service) Remove(ctx context.Context, repoName, name string, force bool)
 		return err
 	}
 	if err := git.DeleteBranch(ctx, branch); err != nil {
-		return fmt.Errorf("%w: %s in %s. force-delete with `git -C %q branch -D %s` if you want to discard the commits (orig: %v)",
-			ErrBranchKeptUnmerged, branch, repo.Name, repo.Path, branch, err)
+		// Keep the wrap to a single line — git's stderr for `branch -d`
+		// includes multi-line "hint:" suggestions which corrupt the
+		// TUI's one-line error footer when concatenated verbatim.
+		orig := strings.SplitN(err.Error(), "\n", 2)[0]
+		return fmt.Errorf("%w: %s in %s. force-delete with `git -C %q branch -D %s` if you want to discard the commits (orig: %s)",
+			ErrBranchKeptUnmerged, branch, repo.Name, repo.Path, branch, orig)
 	}
 	return nil
 }

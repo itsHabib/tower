@@ -3,8 +3,7 @@
 // Integration tests that drive the live tui.Model against a real
 // throwaway git repo. They exercise every keystroke flow that the user
 // reaches in the TUI: register repo (r), add worktree (a), remove
-// worktree (d/y), and the claude+worktree spawn chain (c → t → name →
-// prompt) up to but not including the actual subprocess fork.
+// worktree (d/y).
 //
 // These touch the filesystem (mkdir, git init, git worktree add/remove)
 // and shell out to the real git binary, so they are tagged
@@ -173,6 +172,7 @@ func TestTUI_Add_d_y_Removes_Worktree(t *testing.T) {
 	}
 
 	m := f.boot(t)
+	m, _ = keyRune(t, m, 'g') // d acts on a worktree, only available in flat view
 	idx := findRow(m, "tower/feat")
 	if idx < 0 {
 		t.Fatalf("tower/feat not on board; rows=%v", branchesOf(m))
@@ -227,6 +227,7 @@ func TestTUI_Remove_DirtyWorktree_ForcesViaConfirmation(t *testing.T) {
 	}
 
 	m := f.boot(t)
+	m, _ = keyRune(t, m, 'g') // d acts on a worktree, only available in flat view
 	idx := findRow(m, "tower/wip")
 	if idx < 0 {
 		t.Fatalf("tower/wip not on board; rows=%v", branchesOf(m))
@@ -279,6 +280,7 @@ func TestTUI_Remove_KeepsBranch_WhenUnmerged(t *testing.T) {
 	}
 
 	m := f.boot(t)
+	m, _ = keyRune(t, m, 'g') // d acts on a worktree, only available in flat view
 	idx := findRow(m, "tower/wip")
 	if idx < 0 {
 		t.Fatalf("tower/wip not on board")
@@ -376,6 +378,7 @@ func TestTUI_RefuseRemoveMainWorktree(t *testing.T) {
 	f := newE2EFixture(t)
 
 	m := f.boot(t)
+	m, _ = keyRune(t, m, 'g') // d acts on a worktree, only available in flat view
 	idx := findRow(m, "main")
 	if idx < 0 {
 		idx = findRow(m, "master")
@@ -398,35 +401,6 @@ func TestTUI_RefuseRemoveMainWorktree(t *testing.T) {
 	if !strings.Contains(m.err.Error(), "main worktree") {
 		t.Fatalf("err should mention main worktree: %v", m.err)
 	}
-}
-
-func TestTUI_ClaudeSpawn_c_t_chain(t *testing.T) {
-	f := newE2EFixture(t)
-	m := f.boot(t)
-	if len(m.rows) == 0 {
-		t.Fatal("no rows")
-	}
-	m, _ = keyRune(t, m, 'c')
-	if m.input != inputClaudeSpawnMode {
-		t.Fatalf("after c: input=%d want inputClaudeSpawnMode", m.input)
-	}
-	m, _ = keyRune(t, m, 't')
-	if m.input != inputClaudeName {
-		t.Fatalf("after t: input=%d want inputClaudeName", m.input)
-	}
-	if m.spawnTarget != SpawnTerminal {
-		t.Fatal("spawnTarget != SpawnTerminal")
-	}
-	m = typeRunes(t, m, "wt-name")
-	m, _ = keyEnter(t, m)
-	if m.input != inputClaudePrompt {
-		t.Fatalf("after name+enter: input=%d want inputClaudePrompt", m.input)
-	}
-	if m.stagedName != "wt-name" {
-		t.Fatalf("stagedName=%q", m.stagedName)
-	}
-	// Stop here — pressing enter again would shell out to the real
-	// `claude` / Windows Terminal. That's covered by manual testing.
 }
 
 func TestTUI_AddName_BootstrapsFromOnlyRepo(t *testing.T) {

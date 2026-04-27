@@ -1,14 +1,13 @@
 # tower
 
-A control tower for parallel agentic work. Manage many concurrent
-worktrees, the pull requests they turn into, and the Claude sessions
-running inside them — all from one place.
+A control tower for parallel agentic work. See, at a glance, every
+worktree and the pull request it turns into — all from one place.
 
 Tower is a TUI, a CLI, and an MCP server. Pick whichever surface fits
 the moment.
 
 > Status: early development. Tested on Windows; CLI works on every
-> platform, the spawn-claude shortcut is Windows-only for now.
+> platform.
 
 ---
 
@@ -22,9 +21,9 @@ waiting on review, which broke CI, and which need your attention.
 
 Mental model: each row is a worktree. Each worktree maps 1:1 to a
 branch and (eventually) a PR. Tower keeps the local git state, the
-GitHub PR/review/CI state, and the worktree's "where to cd into"
-location all in one place, so the answer to "what should I look at
-next?" is one keystroke away.
+GitHub PR/review/CI state, and the worktree's on-disk path all in
+one place, so the answer to "what should I look at next?" is one
+keystroke away.
 
 ---
 
@@ -71,18 +70,50 @@ The TUI shows every worktree across every registered repo, sorted by
 
 ## The TUI at a glance
 
+Two views, toggled with `g`:
+
+**Grouped (default)** — one row per repo, summarising what's going on
+across all of its worktrees. Press `enter` on a repo to drill into
+that repo's worktrees.
+
 ```
 tower
-[?] help  [q] quit  [s] sync  [g] grouped  [/] filter  [enter] cd  [a] worktree  [r] repo  [c] claude+wt  · auto-refresh 60s
+[?] help  [q] quit  [s] sync  [g] grouped  [/] filter  · auto-refresh 60s
+[enter] drill  [a] worktree  [r] repo
 
-repo
-  BRANCH                DIRTY  A/B  PR             CI                    REVIEWS               LAST
-> tower/login-redesign  yes    2/0  #142 open      ✓ 5/5                 ✓ alice               5m · refactor: split form
-  tower/auth-cleanup    -      0/1  #138 merged    ✓ 5/5                 ✓ bob                 1d · merge main
-  main                  -      0/0  -              -                     -                     just now · initial
+  REPO                 WORKTREES DIRTY   OPEN PRS FAILING CI LAST ACTIVITY
+> roxiq                5         2       3        1          5m
+  tower                3         0       1        0          1h
+  cortex               2         1       0        0          2d
 ```
 
-Columns:
+**Flat** — one row per worktree. This is where you act on individual
+branches: see their full state, remove them, bulk-delete a batch, open
+their PR.
+
+```
+tower
+[?] help  [q] quit  [s] sync  [g] flat  [/] filter  · auto-refresh 60s
+[enter] details  [a] worktree  [r] repo  [d] remove  [o] open PR  [space] select  [D] delete selected
+
+      REPO          BRANCH                DIRTY  A/B  PR             CI                    REVIEWS               LAST
+>     roxiq         tower/login-redesign  yes    2/0  #142 open      ✓ 5/5                 ✓ alice               5m · refactor: split form
+  ✓   roxiq         tower/auth-cleanup    -      0/1  #138 merged    ✓ 5/5                 ✓ bob                 1d · merge main
+      roxiq         main                  -      0/0  -              -                     -                     just now · initial
+```
+
+The two header rows split universal controls from mode-specific
+actions, so what you see is exactly what works *right now*. The `✓`
+marker on the second row is a multi-select hit (toggled with
+`space`); the chip in the footer becomes `N selected — D to delete`
+once anything is marked.
+
+Pressing `enter` on a flat row opens a **detail panel** with the
+worktree's full state — path, ahead/behind, PR number/title/url, every
+CI check, every reviewer's latest disposition. From the panel, `o`
+opens the PR in your browser; `esc`/`q`/`enter` closes it.
+
+Columns (flat):
 - **DIRTY** — uncommitted changes in the worktree
 - **A/B** — commits **a**head / **b**ehind the branch's upstream
 - **PR** — most recent known PR state for the branch
@@ -95,31 +126,18 @@ Columns:
 | Key       | Does                                                            |
 |-----------|-----------------------------------------------------------------|
 | `j` / `k` | move cursor                                                     |
-| `enter`   | quit and `cd` into the cursor row's worktree                    |
+| `enter`   | grouped: drill into the cursor repo. flat: open detail panel for the cursor row |
 | `/`       | filter (substring on branch/repo/title); `esc` clears           |
 | `g`       | toggle grouped-by-repo / flat                                   |
 | `a`       | add a worktree to cursor row's repo (or the only repo if empty) |
 | `r`       | register a new repo (path; empty = cwd)                         |
-| `d`       | remove cursor row's worktree (deletes branch only if merged)    |
-| `o`       | open cursor row's PR in the browser                             |
-| `c`       | spawn a claude session in a fresh worktree                      |
+| `d`       | flat only — remove cursor worktree (deletes branch only if merged) |
+| `space`   | flat only — toggle selection on cursor row (advances cursor)    |
+| `D`       | flat only — remove every selected worktree                      |
+| `o`       | flat only — open cursor row's PR in the browser                 |
 | `s`       | sync from git + GitHub now                                      |
 | `?`       | help screen                                                     |
 | `q`       | quit                                                            |
-
-### Spawning a Claude session
-
-`c` → asks three things in order:
-
-1. `[1/3]` — `t`erminal (opens a new Windows Terminal tab) or
-   `b`ackground (headless `claude -p`).
-2. `[2/3]` — worktree name. Claude itself creates the worktree at
-   `<repo>/.claude/worktrees/<name>` so it owns the lifecycle.
-3. `[3/3]` — initial prompt (required for background mode; optional
-   for terminal mode).
-
-Background mode detaches from the tower process — closing tower
-doesn't kill the claude session.
 
 ### Removing worktrees safely
 

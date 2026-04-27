@@ -2,8 +2,8 @@
 #
 # Spin up an isolated tower sandbox for manual TUI testing on Windows.
 # - Builds tower.exe (idempotent)
-# - Creates a fresh git repo with a few commits and a couple of
-#   throwaway tower-style worktrees so the board has rows to play with.
+# - Builds and runs scripts/seed which creates ~6 fake repos with a
+#   handful of worktrees each, in varied state (clean, dirty, ahead).
 # - Points APPDATA at a sandbox dir so tower's state.db is isolated
 #   from your real tower state.
 # - Prints the exact command to launch the TUI.
@@ -15,18 +15,18 @@
 
 $ErrorActionPreference = 'Stop'
 
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot '..')
-$Sandbox = Join-Path $RootDir '.sandbox'
-$Repo    = Join-Path $Sandbox 'repo'
-$State   = Join-Path $Sandbox 'state'
-$Bin     = Join-Path $RootDir 'tower.exe'
+$RootDir  = Resolve-Path (Join-Path $PSScriptRoot '..')
+$Sandbox  = Join-Path $RootDir '.sandbox'
+$ReposDir = Join-Path $Sandbox 'repos'
+$State    = Join-Path $Sandbox 'state'
+$Bin      = Join-Path $RootDir 'tower.exe'
 
 Write-Host "==> sandbox at $Sandbox"
 if (Test-Path $Sandbox) {
     Remove-Item -Recurse -Force $Sandbox
 }
-New-Item -ItemType Directory -Path $Repo  -Force | Out-Null
-New-Item -ItemType Directory -Path $State -Force | Out-Null
+New-Item -ItemType Directory -Path $ReposDir -Force | Out-Null
+New-Item -ItemType Directory -Path $State    -Force | Out-Null
 
 Write-Host "==> building tower.exe"
 Push-Location $RootDir
@@ -35,47 +35,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 } finally { Pop-Location }
 
-Write-Host "==> initializing throwaway git repo"
-Push-Location $Repo
+Write-Host "==> seeding playground"
+Push-Location $RootDir
 try {
-    & git init -q
-    & git config user.email sandbox@tower
-    & git config user.name  sandbox
-    Set-Content -Path 'README.md' -Value '# sandbox repo' -NoNewline
-    & git add README.md
-    & git commit -qm 'initial'
-    Set-Content -Path 'a.txt' -Value 'feat 1' -NoNewline
-    & git add a.txt
-    & git commit -qm 'add a'
-    Set-Content -Path 'b.txt' -Value 'feat 2' -NoNewline
-    & git add b.txt
-    & git commit -qm 'add b'
-} finally { Pop-Location }
-
-Write-Host "==> registering repo and seeding worktrees"
-$env:APPDATA = $State
-& $Bin repo add $Repo | Out-Null
-& $Bin add --repo repo feat-x | Out-Null
-& $Bin add --repo repo feat-y | Out-Null
-
-# One dirty worktree + one with an unmerged commit, so every branch of
-# the d-flow is exercisable by hand.
-Set-Content -Path (Join-Path $Repo '.worktrees\feat-x\dirty.txt') -Value 'dirt' -NoNewline
-
-Push-Location (Join-Path $Repo '.worktrees\feat-y')
-try {
-    & git config user.email sandbox@tower
-    & git config user.name  sandbox
-    Set-Content -Path 'only-on-y.txt' -Value 'secret' -NoNewline
-    & git add only-on-y.txt
-    & git commit -qm 'only on tower/feat-y (unmerged)'
+    & go run ./scripts/seed -root $ReposDir -state $State
+    if ($LASTEXITCODE -ne 0) { throw "seed failed" }
 } finally { Pop-Location }
 
 Write-Host ""
 Write-Host "==> sandbox ready." -ForegroundColor Green
 Write-Host ""
 Write-Host "    sandbox APPDATA: $State"
-Write-Host "    sandbox repo:    $Repo"
+Write-Host "    fake repos:      $ReposDir"
 Write-Host ""
 Write-Host "Launch the TUI with:"
 Write-Host ""

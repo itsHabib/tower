@@ -1,0 +1,11 @@
+tower  ◯ syncing…
+[?] help  [q] quit  [s] sync  [g] grouped  [/] filter  · auto-refresh 60s
+[enter] drill  [a] worktree  [r] repo
+
+REPO                 WORKTREES DIRTY   OPEN PRS FAILING CI LAST ACTIVITY
+> gamma                2         1       -        -          just now
+  alpha                3         1       -        -          just now
+  beta                 2         -       -        -          just now
+
+7 worktrees  ·  3 repos  ·  2 dirty
+<TMP_PATH>
