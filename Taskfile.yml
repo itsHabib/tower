@@ -1,0 +1,93 @@
+# Cross-platform task runner. Works on Windows out of the box.
+#
+# Install:  go install github.com/go-task/task/v3/cmd/task@latest
+# List:     task --list
+# Run:      task <name>
+#
+# See TESTING.md for the testing tiers.
+
+version: '3'
+
+vars:
+  BIN: tower.exe
+  PKG: ./...
+
+tasks:
+
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build tower.exe into the repo root
+    cmds:
+      - go build -o {{.BIN}} ./cmd/tower
+
+  install:
+    desc: go install tower into $GOBIN
+    cmds:
+      - go install ./cmd/tower
+
+  test:
+    desc: Unit tests only — the fast feedback loop
+    cmds:
+      - go test {{.PKG}}
+
+  test:int:
+    desc: Unit + integration (real git, real tower.exe, real MCP server)
+    cmds:
+      - go test -tags=integration {{.PKG}}
+
+  test:tui:
+    desc: Just the TUI integration tests (drive Model with synthetic keys)
+    cmds:
+      - go test -tags=integration -v ./internal/tui
+
+  test:cli:
+    desc: Just the CLI / MCP e2e tests (subprocess tower.exe)
+    cmds:
+      - go test -tags=integration -v ./cmd/tower -run TestE2E
+
+  test:cover:
+    desc: Coverage profile for unit tests
+    cmds:
+      - go test -coverprofile=coverage.out {{.PKG}}
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: cmd /c start coverage.html
+        platforms: [windows]
+      - cmd: open coverage.html
+        platforms: [darwin]
+
+  vet:
+    desc: go vet across the module
+    cmds:
+      - go vet {{.PKG}}
+
+  tidy:
+    desc: Tidy go.mod
+    cmds:
+      - go mod tidy
+
+  tui:sandbox:
+    desc: Build tower and launch the TUI in an isolated sandbox env
+    deps: [build]
+    cmds:
+      - bash scripts/setup-test-env.sh
+
+  mcp:smoke:
+    desc: Quick smoke test against tower mcp serve (lists tools)
+    deps: [build]
+    cmds:
+      - cmd: echo {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}} | ./{{.BIN}} mcp serve
+        platforms: [linux, darwin]
+      - cmd: powershell -Command "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"smoke\",\"version\":\"1\"}}}' | .\\{{.BIN}} mcp serve"
+        platforms: [windows]
+
+  clean:
+    desc: Remove build artifacts and coverage output
+    cmds:
+      - cmd: cmd /c "del /q {{.BIN}} coverage.out coverage.html 2>nul & exit /b 0"
+        platforms: [windows]
+      - cmd: rm -f {{.BIN}} coverage.out coverage.html
+        platforms: [linux, darwin]

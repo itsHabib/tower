@@ -1,0 +1,121 @@
+# Testing Tower
+
+Tower has three tiers of tests, separated by the resources they need.
+
+## Tiers
+
+### 1. Unit (default)
+
+Pure-Go tests that don't shell out to git, don't touch the filesystem
+beyond `t.TempDir()` for an SQLite store, and don't open subprocesses.
+Run on every commit; should finish in well under a second.
+
+```bash
+go test ./...
+```
+
+What's covered: store SQL, parsing/format helpers, sort modes,
+priority logic, workflow orchestration with fake `observe.Git` and
+fake `observe.GH`, MCP handler unit tests with the same fakes.
+
+### 2. Integration (build tag: `integration`)
+
+Tests that shell out to the real `git` binary, build the real
+`tower.exe`, drive the live `tui.Model` through synthetic key events,
+or speak JSON-RPC to a spawned `tower mcp serve`. Each test is
+hermetic — it builds its own throwaway git repo under `t.TempDir()`
+and uses an isolated `APPDATA` so it can't see or corrupt your real
+tower state.
+
+```bash
+go test -tags=integration ./...
+```
+
+What's covered:
+- `internal/tui/tui_e2e_test.go` — drives the bubbletea `Model`
+  through every keystroke flow (a / r / d/y / c+t+name+prompt) and
+  asserts both UI state and on-disk side effects.
+- `cmd/tower/e2e_test.go` — runs the real `tower.exe` binary as a
+  subprocess against a fresh repo: full add → ls → rm → re-add cycle,
+  unmerged-branch warning path, MCP tool listing, MCP register/list.
+
+### 3. Real-spawn / external (env-gated)
+
+Tests that need an external resource that costs money, opens a window,
+or hits a remote service:
+
+| Resource             | Env var to opt in       | Where               |
+|----------------------|-------------------------|---------------------|
+| Real `claude` binary | `TOWER_TEST_REAL_SPAWN` | (TODO — see below)  |
+| Anthropic API key    | `ANTHROPIC_API_KEY`     | (TODO)              |
+| GitHub token         | `GITHUB_TOKEN`          | (TODO)              |
+
+These should also use the `integration` tag so they're excluded from
+the default `go test`. They additionally `t.Skip()` when the env var
+isn't set.
+
+> Pattern: `if os.Getenv("TOWER_TEST_REAL_SPAWN") == "" { t.Skip(...) }`
+
+The claude-spawn flow currently has a tier-2 test
+(`TestTUI_ClaudeSpawn_c_t_chain`) that walks the prompt chain up to
+the final Enter — pressing it would actually fork `wt`/`claude`. A
+real-spawn test that stubs `claude` on PATH and asserts argv is on the
+TODO list.
+
+## Manual testing in an isolated environment
+
+`scripts/setup-test-env.sh` builds tower, spins up a throwaway git
+repo, points `APPDATA` at a sandbox dir, and prints the command to
+launch the TUI against it. Use this when poking at the TUI by hand —
+no risk of stomping your real tower state.
+
+```bash
+bash scripts/setup-test-env.sh
+```
+
+Output ends with the exact `APPDATA=... tower.exe` invocation you
+should run. Re-running the script wipes the previous sandbox.
+
+## Debug logging
+
+Set `TOWER_DEBUG=1` before launching the TUI to enable trace logging
+to `%TEMP%/tower-debug.log`. The log records every key dispatch and
+every removeCmd / repoAddedMsg / loadedMsg flow. Useful when something
+"doesn't seem to do anything" — the log shows whether the code path
+even fired.
+
+```bash
+TOWER_DEBUG=1 ./tower.exe   # bash / Git Bash
+$env:TOWER_DEBUG=1; .\tower.exe   # PowerShell
+```
+
+## Task runner (cross-platform)
+
+Targets are in `Taskfile.yml`, run via [Task](https://taskfile.dev/):
+
+```bash
+go install github.com/go-task/task/v3/cmd/task@latest
+task --list
+task test          # unit tests
+task test:int      # unit + integration
+task build         # build tower.exe
+task tui:sandbox   # build + launch TUI in isolated sandbox
+```
+
+Task is a cross-platform make replacement; it works on Windows without
+needing make, bash, or WSL. The `Taskfile.yml` also documents what
+each target does.
+
+## Adding tests
+
+- A new piece of pure logic: drop a `_test.go` next to the file with
+  fakes for any external dependencies. No build tag.
+- A flow that touches git or the live `tui.Model`: add to one of the
+  `_e2e_test.go` files with `//go:build integration` at the top, and
+  use `t.TempDir()` plus an env-isolated `APPDATA`.
+- A flow that needs a real external resource: same as integration but
+  also `t.Skip(...)` unless the relevant env var is set, and document
+  the env var in the table above.
+
+The split exists so `go test ./...` stays a fast feedback loop on
+every save while the heavier suites can run on demand or in CI.

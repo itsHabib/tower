@@ -16,3 +16,9 @@ vendor/
 .vscode/
 *.swp
 .DS_Store
+
+# integration-test sandbox (created by scripts/setup-test-env.sh)
+.sandbox/
+
+# scratch / handoff prompts; not part of the source tree
+docs/
