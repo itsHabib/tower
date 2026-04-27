@@ -22,3 +22,4 @@ vendor/
 
 # scratch / handoff prompts; not part of the source tree
 docs/
+*~
