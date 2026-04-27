@@ -297,8 +297,15 @@ func formatLast(t time.Time, subject string) string {
 	}
 }
 
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
 func (m *Model) viewFooter() string {
-	parts := []string{fmt.Sprintf("%d worktrees", len(m.rows))}
+	parts := []string{pluralize(len(m.rows), "worktree", "worktrees")}
 	dirty := 0
 	for _, r := range m.rows {
 		if r.wt.Dirty {
@@ -306,7 +313,7 @@ func (m *Model) viewFooter() string {
 		}
 	}
 	if len(m.repos) > 0 {
-		parts = append(parts, fmt.Sprintf("%d repos", len(m.repos)))
+		parts = append(parts, pluralize(len(m.repos), "repo", "repos"))
 	}
 	if dirty > 0 {
 		parts = append(parts, fmt.Sprintf("%d dirty", dirty))

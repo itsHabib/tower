@@ -57,12 +57,28 @@ func (g *GitObserver) DeleteBranch(ctx context.Context, branch string) error {
 }
 
 // Dirty reports whether the worktree at path has uncommitted changes.
+//
+// Tower's own .worktrees/ directory shows up as untracked from the
+// main worktree (git only excludes the linked worktree paths, not
+// their parent directory), which would falsely paint main as dirty
+// the moment you create your first tower worktree. We filter that one
+// path out here so users don't have to gitignore it manually.
 func (g *GitObserver) Dirty(ctx context.Context, path string) (bool, error) {
 	out, err := g.Runner.Run(ctx, path, "git", "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
 	}
-	return len(bytes.TrimSpace(out)) > 0, nil
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if bytes.Equal(line, []byte("?? .worktrees/")) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // AheadBehind returns commits ahead and behind the worktree's upstream.

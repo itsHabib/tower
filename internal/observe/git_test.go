@@ -129,6 +129,10 @@ func TestDirty(t *testing.T) {
 		{"clean whitespace", []byte("\n  \n"), false},
 		{"modified", []byte(" M file.go\n"), true},
 		{"new file", []byte("?? new.go\n"), true},
+		// Tower's own worktree dir shows up as untracked in the main
+		// worktree; filter it out so main isn't perma-dirty.
+		{"only worktrees dir untracked", []byte("?? .worktrees/\n"), false},
+		{"worktrees dir plus real dirt", []byte("?? .worktrees/\n M file.go\n"), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
