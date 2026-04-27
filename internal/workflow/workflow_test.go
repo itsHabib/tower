@@ -19,6 +19,7 @@ type fakeGit struct {
 		repoPath     string
 	}
 	removed         string
+	removedForce    bool
 	deletedBranches []string
 	addErr          error
 	delBranchErr    error
@@ -32,8 +33,9 @@ func (f *fakeGit) AddWorktree(_ context.Context, path, branch string) error {
 	f.added.path, f.added.branch = path, branch
 	return nil
 }
-func (f *fakeGit) RemoveWorktree(_ context.Context, path string) error {
+func (f *fakeGit) RemoveWorktree(_ context.Context, path string, force bool) error {
 	f.removed = path
+	f.removedForce = force
 	return nil
 }
 func (f *fakeGit) DeleteBranch(_ context.Context, branch string) error {
@@ -146,12 +148,27 @@ func TestRemoveTearsDownInRepo(t *testing.T) {
 	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Remove(context.Background(), "orchestra", "x"); err != nil {
+	if err := svc.Remove(context.Background(), "orchestra", "x", false); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	got, _ := s.GetWorktree(context.Background(), "orchestra", "tower/x")
 	if got != nil {
 		t.Errorf("should be deleted: %+v", got)
+	}
+}
+
+func TestRemovePassesForceToGit(t *testing.T) {
+	g := &fakeGit{}
+	svc, _ := newSvc(t, g)
+	mustRepo(t, svc, "/pers/orchestra")
+	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Remove(context.Background(), "orchestra", "x", true); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if !g.removedForce {
+		t.Fatalf("force=true was not propagated to git.RemoveWorktree")
 	}
 }
 
@@ -162,7 +179,7 @@ func TestRemoveDeletesBranchSoSameNameReAdds(t *testing.T) {
 	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Remove(context.Background(), "orchestra", "x"); err != nil {
+	if err := svc.Remove(context.Background(), "orchestra", "x", false); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if len(g.deletedBranches) != 1 || g.deletedBranches[0] != "tower/x" {
@@ -180,7 +197,7 @@ func TestRemoveKeepsUnmergedBranchAndReportsIt(t *testing.T) {
 	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
 		t.Fatal(err)
 	}
-	err := svc.Remove(context.Background(), "orchestra", "x")
+	err := svc.Remove(context.Background(), "orchestra", "x", false)
 	if !errors.Is(err, ErrBranchKeptUnmerged) {
 		t.Fatalf("want ErrBranchKeptUnmerged, got %v", err)
 	}

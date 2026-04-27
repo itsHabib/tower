@@ -39,9 +39,16 @@ func (g *GitObserver) AddWorktree(ctx context.Context, path, branch string) erro
 	return nil
 }
 
-// RemoveWorktree tears down the worktree at path.
-func (g *GitObserver) RemoveWorktree(ctx context.Context, path string) error {
-	if _, err := g.Runner.Run(ctx, g.Repo, "git", "worktree", "remove", path); err != nil {
+// RemoveWorktree tears down the worktree at path. With force=true we
+// pass --force so uncommitted changes are discarded; without it git
+// refuses on a dirty worktree (and the error bubbles up).
+func (g *GitObserver) RemoveWorktree(ctx context.Context, path string, force bool) error {
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+	if _, err := g.Runner.Run(ctx, g.Repo, "git", args...); err != nil {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
 	return nil

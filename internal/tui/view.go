@@ -106,7 +106,12 @@ func (m *Model) viewInputLine() string {
 	case inputClaudePrompt:
 		return cursorStyle.Render(fmt.Sprintf("claude+worktree (%s) — [3/3] initial prompt for %s%s: %s_", m.spawnTargetLabel(), m.stagedName, m.promptHint(), m.inputBuf))
 	case inputConfirmDelete:
-		return cursorStyle.Render(fmt.Sprintf("remove worktree %s/%s (and delete branch if merged)? [y/N]", m.inputTarget.wt.Repo, m.inputTarget.wt.Branch))
+		warn := ""
+		if m.inputTarget.wt.Dirty {
+			warn = errStyle.Render(" — DIRTY: uncommitted changes will be discarded")
+		}
+		return cursorStyle.Render(fmt.Sprintf("remove worktree %s/%s (and delete branch if merged)%s? [y/N]",
+			m.inputTarget.wt.Repo, m.inputTarget.wt.Branch, warn))
 	case inputNone:
 	}
 	return ""

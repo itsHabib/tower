@@ -25,7 +25,7 @@ func (f *fakeGit) AddWorktree(_ context.Context, path, branch string) error {
 	f.addedPath, f.addedBranch = path, branch
 	return nil
 }
-func (f *fakeGit) RemoveWorktree(_ context.Context, path string) error {
+func (f *fakeGit) RemoveWorktree(_ context.Context, path string, _ bool) error {
 	f.removedPaths = append(f.removedPaths, path)
 	return nil
 }

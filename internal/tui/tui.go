@@ -178,10 +178,10 @@ func addCmd(ctx context.Context, wf *workflow.Service, repoName, name string) te
 	}
 }
 
-func removeCmd(ctx context.Context, wf *workflow.Service, repoName, name string) tea.Cmd {
+func removeCmd(ctx context.Context, wf *workflow.Service, repoName, name string, force bool) tea.Cmd {
 	return func() tea.Msg {
-		dbg.Printf("removeCmd: calling wf.Remove(repo=%q, name=%q)", repoName, name)
-		err := wf.Remove(ctx, repoName, name)
+		dbg.Printf("removeCmd: calling wf.Remove(repo=%q, name=%q, force=%v)", repoName, name, force)
+		err := wf.Remove(ctx, repoName, name, force)
 		if err != nil {
 			dbg.Printf("removeCmd: wf.Remove returned err: %v", err)
 		} else {
@@ -617,8 +617,12 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		target := m.inputTarget
 		m.input = inputNone
-		dbg.Printf("handleConfirmKey: y confirmed; dispatching removeCmd repo=%q branch=%q", target.wt.Repo, target.wt.Branch)
-		return m, removeCmd(m.ctx, m.workflow, target.wt.Repo, target.wt.Branch)
+		// Pass --force to git when the worktree has uncommitted
+		// changes — the user already saw the "(dirty)" warning in
+		// the prompt and confirmed.
+		force := target.wt.Dirty
+		dbg.Printf("handleConfirmKey: y confirmed; dispatching removeCmd repo=%q branch=%q force=%v", target.wt.Repo, target.wt.Branch, force)
+		return m, removeCmd(m.ctx, m.workflow, target.wt.Repo, target.wt.Branch, force)
 	case "n", "N", "esc", "enter":
 		dbg.Printf("handleConfirmKey: cancelled")
 		m.input = inputNone

@@ -20,7 +20,7 @@ func TestRunRmTearsDownWorktree(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runRm(ctx, env.c, "feat-x", "myrepo", &buf); err != nil {
+	if err := runRm(ctx, env.c, "feat-x", "myrepo", false, &buf); err != nil {
 		t.Fatalf("runRm: %v", err)
 	}
 

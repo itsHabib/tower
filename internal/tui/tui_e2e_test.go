@@ -14,6 +14,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,6 +203,55 @@ func TestTUI_Add_d_y_Removes_Worktree(t *testing.T) {
 	out, _ = exec.Command("git", "-C", f.repoPath, "worktree", "list").CombinedOutput()
 	if strings.Contains(string(out), "tower/feat") {
 		t.Fatalf("worktree still listed in git: %s", out)
+	}
+}
+
+func TestTUI_Remove_DirtyWorktree_ForcesViaConfirmation(t *testing.T) {
+	// Reproduces the user-reported "git remove worktree refused" error.
+	// The sandbox script seeds a dirty worktree on purpose; pressing
+	// y on the confirm prompt must pass --force through so dirty
+	// worktrees aren't a dead-end in the TUI.
+	f := newE2EFixture(t)
+	ctx := context.Background()
+
+	wt, err := f.wf.Add(ctx, "repo", "wip")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Make wip dirty: drop an untracked file in it.
+	if err := os.WriteFile(filepath.Join(wt.Path, "scratch.txt"), []byte("dirt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.wf.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	m := f.boot(t)
+	idx := findRow(m, "tower/wip")
+	if idx < 0 {
+		t.Fatalf("tower/wip not on board; rows=%v", branchesOf(m))
+	}
+	if !m.rows[idx].wt.Dirty {
+		t.Fatalf("setup mistake: row should be dirty; got %+v", m.rows[idx].wt)
+	}
+	m = moveCursor(t, m, idx)
+
+	m, _ = keyRune(t, m, 'd')
+	if m.input != inputConfirmDelete {
+		t.Fatalf("d should open confirm; got input=%d err=%v", m.input, m.err)
+	}
+	m, cmd := keyRune(t, m, 'y')
+	m = drainCmd(t, m, cmd)
+
+	if m.err != nil {
+		t.Fatalf("dirty remove should succeed via --force; got err=%v", m.err)
+	}
+	if findRow(m, "tower/wip") >= 0 {
+		t.Fatalf("tower/wip still on board; rows=%v", branchesOf(m))
+	}
+	// And gone on disk.
+	if _, err := os.Stat(wt.Path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("worktree dir should be gone: %v (path=%s)", err, wt.Path)
 	}
 }
 

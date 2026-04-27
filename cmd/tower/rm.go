@@ -14,11 +14,12 @@ import (
 func cmdRm(args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo name (required if name is ambiguous)")
+	force := fs.Bool("force", false, "remove the worktree even if it has uncommitted changes (passes --force to git)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("usage: tower rm <name> [--repo <repo>]")
+		return errors.New("usage: tower rm <name> [--repo <repo>] [--force]")
 	}
 	ctx := context.Background()
 	c, cleanup, err := setup(ctx)
@@ -26,10 +27,10 @@ func cmdRm(args []string) error {
 		return err
 	}
 	defer cleanup()
-	return runRm(ctx, c, fs.Arg(0), *repoFlag, os.Stdout)
+	return runRm(ctx, c, fs.Arg(0), *repoFlag, *force, os.Stdout)
 }
 
-func runRm(ctx context.Context, c *cliCtx, name, repoFlag string, out io.Writer) error {
+func runRm(ctx context.Context, c *cliCtx, name, repoFlag string, force bool, out io.Writer) error {
 	repoName, err := resolveRepoOrInfer(ctx, c, repoFlag, name)
 	if err != nil {
 		return err
@@ -44,7 +45,7 @@ func runRm(ctx context.Context, c *cliCtx, name, repoFlag string, out io.Writer)
 	if err := refuseIfCwdInside(wt.Path); err != nil {
 		return err
 	}
-	if err := c.workflow.Remove(ctx, repoName, name); err != nil {
+	if err := c.workflow.Remove(ctx, repoName, name, force); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(out, "removed: %s/%s\n", repoName, name)

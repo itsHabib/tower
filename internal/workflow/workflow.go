@@ -123,12 +123,15 @@ func (s *Service) Add(ctx context.Context, repoName, name string) (*domain.Workt
 }
 
 // Remove tears down the worktree on the named branch in the named repo.
+// force=true discards uncommitted changes (passes --force to git);
+// without it, git refuses on a dirty worktree and the error bubbles up.
+//
 // After the worktree is gone, the branch is deleted only if it is fully
 // merged. An unmerged branch is left in place and reported as
 // ErrBranchKeptUnmerged so the user can decide what to do — re-adding
 // the same name will then fail with "branch already exists" until they
 // either merge the branch or run `git branch -D` themselves.
-func (s *Service) Remove(ctx context.Context, repoName, name string) error {
+func (s *Service) Remove(ctx context.Context, repoName, name string, force bool) error {
 	repo, err := s.requireRepo(ctx, repoName)
 	if err != nil {
 		return err
@@ -142,7 +145,7 @@ func (s *Service) Remove(ctx context.Context, repoName, name string) error {
 		return fmt.Errorf("no worktree tracked for %s/%s", repo.Name, branch)
 	}
 	git := s.git(repo.Path)
-	if err := git.RemoveWorktree(ctx, wt.Path); err != nil {
+	if err := git.RemoveWorktree(ctx, wt.Path, force); err != nil {
 		return fmt.Errorf("git remove worktree: %w", err)
 	}
 	if err := s.store.DeleteWorktree(ctx, repo.Name, branch); err != nil {

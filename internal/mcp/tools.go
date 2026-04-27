@@ -155,8 +155,9 @@ func (h *handlers) addWorktree(ctx context.Context, _ *mcp.CallToolRequest, args
 
 // RemoveWorktreeArgs is the input for remove_worktree.
 type RemoveWorktreeArgs struct {
-	Repo string `json:"repo" jsonschema:"name of the registered repo"`
-	Name string `json:"name" jsonschema:"worktree short name (or full branch with a slash)"`
+	Repo  string `json:"repo" jsonschema:"name of the registered repo"`
+	Name  string `json:"name" jsonschema:"worktree short name (or full branch with a slash)"`
+	Force bool   `json:"force,omitempty" jsonschema:"if true, discard uncommitted changes and remove the worktree anyway"`
 }
 
 // RemoveResult confirms the deletion. Plain shape so the agent can
@@ -171,7 +172,7 @@ func (h *handlers) removeWorktree(ctx context.Context, _ *mcp.CallToolRequest, a
 	if args.Repo == "" || args.Name == "" {
 		return toolError("repo and name are both required"), RemoveResult{}, nil
 	}
-	if err := h.workflow.Remove(ctx, args.Repo, args.Name); err != nil {
+	if err := h.workflow.Remove(ctx, args.Repo, args.Name, args.Force); err != nil {
 		return toolError("remove: %v", err), RemoveResult{}, nil
 	}
 	return nil, RemoveResult{Removed: true, Repo: args.Repo, Name: args.Name}, nil

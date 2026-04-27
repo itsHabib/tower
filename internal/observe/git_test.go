@@ -98,11 +98,17 @@ func TestAddRemoveWorktree(t *testing.T) {
 	if !reflect.DeepEqual(r.last.args, []string{"worktree", "add", "-b", "tower/x", "/p"}) {
 		t.Fatalf("add args: %v", r.last.args)
 	}
-	if err := g.RemoveWorktree(context.Background(), "/p"); err != nil {
+	if err := g.RemoveWorktree(context.Background(), "/p", false); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if !reflect.DeepEqual(r.last.args, []string{"worktree", "remove", "/p"}) {
 		t.Fatalf("remove args: %v", r.last.args)
+	}
+	if err := g.RemoveWorktree(context.Background(), "/p", true); err != nil {
+		t.Fatalf("remove force: %v", err)
+	}
+	if !reflect.DeepEqual(r.last.args, []string{"worktree", "remove", "--force", "/p"}) {
+		t.Fatalf("remove force args: %v", r.last.args)
 	}
 }
 

@@ -24,7 +24,10 @@ type Worktree struct {
 type Git interface {
 	Worktrees(ctx context.Context) ([]Worktree, error)
 	AddWorktree(ctx context.Context, path, branch string) error
-	RemoveWorktree(ctx context.Context, path string) error
+	// RemoveWorktree removes the worktree at path. force=true passes
+	// --force to git, discarding uncommitted changes; without it git
+	// refuses on a dirty worktree.
+	RemoveWorktree(ctx context.Context, path string, force bool) error
 	// DeleteBranch deletes the named branch only if it is fully merged
 	// into its upstream (or HEAD). Refuses with an error otherwise so
 	// unmerged commits aren't silently discarded — callers should
