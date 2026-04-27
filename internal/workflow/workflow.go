@@ -123,6 +123,11 @@ func (s *Service) Add(ctx context.Context, repoName, name string) (*domain.Workt
 }
 
 // Remove tears down the worktree on the named branch in the named repo.
+// After the worktree is gone, the branch is deleted only if it is fully
+// merged. An unmerged branch is left in place and reported as
+// ErrBranchKeptUnmerged so the user can decide what to do — re-adding
+// the same name will then fail with "branch already exists" until they
+// either merge the branch or run `git branch -D` themselves.
 func (s *Service) Remove(ctx context.Context, repoName, name string) error {
 	repo, err := s.requireRepo(ctx, repoName)
 	if err != nil {
@@ -136,11 +141,24 @@ func (s *Service) Remove(ctx context.Context, repoName, name string) error {
 	if wt == nil {
 		return fmt.Errorf("no worktree tracked for %s/%s", repo.Name, branch)
 	}
-	if err := s.git(repo.Path).RemoveWorktree(ctx, wt.Path); err != nil {
+	git := s.git(repo.Path)
+	if err := git.RemoveWorktree(ctx, wt.Path); err != nil {
 		return fmt.Errorf("git remove worktree: %w", err)
 	}
-	return s.store.DeleteWorktree(ctx, repo.Name, branch)
+	if err := s.store.DeleteWorktree(ctx, repo.Name, branch); err != nil {
+		return err
+	}
+	if err := git.DeleteBranch(ctx, branch); err != nil {
+		return fmt.Errorf("%w: %s in %s. force-delete with `git -C %q branch -D %s` if you want to discard the commits (orig: %v)",
+			ErrBranchKeptUnmerged, branch, repo.Name, repo.Path, branch, err)
+	}
+	return nil
 }
+
+// ErrBranchKeptUnmerged signals that Remove tore down the worktree but
+// left the branch behind because it had unmerged commits. The worktree
+// is gone from both git and the store; only the branch ref remains.
+var ErrBranchKeptUnmerged = errors.New("branch kept (unmerged commits)")
 
 // Sync triggers a full reconcile + GitHub refresh sweep across all repos.
 func (s *Service) Sync(ctx context.Context) (refresh.AllResult, error) {

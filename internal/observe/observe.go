@@ -25,6 +25,12 @@ type Git interface {
 	Worktrees(ctx context.Context) ([]Worktree, error)
 	AddWorktree(ctx context.Context, path, branch string) error
 	RemoveWorktree(ctx context.Context, path string) error
+	// DeleteBranch deletes the named branch only if it is fully merged
+	// into its upstream (or HEAD). Refuses with an error otherwise so
+	// unmerged commits aren't silently discarded — callers should
+	// surface that as a warning and let the user force-delete by hand
+	// if they actually want to throw the work away.
+	DeleteBranch(ctx context.Context, branch string) error
 	Dirty(ctx context.Context, path string) (bool, error)
 	// AheadBehind returns commits ahead and commits behind the worktree's
 	// upstream (in that order). Returns (0, 0, nil) when no upstream is set.

@@ -106,6 +106,19 @@ func TestAddRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestDeleteBranchUsesSafeDelete(t *testing.T) {
+	r := &fakeRunner{}
+	g := &GitObserver{Repo: "/repo", Runner: r}
+	if err := g.DeleteBranch(context.Background(), "tower/x"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+	// -d (lowercase) refuses if the branch is unmerged — that's the
+	// guarantee we want so we don't silently lose work on remove.
+	if !reflect.DeepEqual(r.last.args, []string{"branch", "-d", "tower/x"}) {
+		t.Fatalf("args: %v", r.last.args)
+	}
+}
+
 func TestDirty(t *testing.T) {
 	cases := []struct {
 		name string

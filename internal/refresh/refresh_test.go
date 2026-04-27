@@ -27,6 +27,7 @@ func (f *fakeGit) Worktrees(_ context.Context) ([]observe.Worktree, error) {
 }
 func (f *fakeGit) AddWorktree(_ context.Context, _, _ string) error { return nil }
 func (f *fakeGit) RemoveWorktree(_ context.Context, _ string) error { return nil }
+func (f *fakeGit) DeleteBranch(_ context.Context, _ string) error   { return nil }
 func (f *fakeGit) Dirty(_ context.Context, p string) (bool, error)  { return f.dirty[p], nil }
 func (f *fakeGit) AheadBehind(_ context.Context, p string) (int, int, error) {
 	return f.ahead[p], f.behind[p], nil

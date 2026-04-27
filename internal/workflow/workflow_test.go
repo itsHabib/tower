@@ -18,8 +18,10 @@ type fakeGit struct {
 		path, branch string
 		repoPath     string
 	}
-	removed string
-	addErr  error
+	removed         string
+	deletedBranches []string
+	addErr          error
+	delBranchErr    error
 }
 
 func (f *fakeGit) Worktrees(_ context.Context) ([]observe.Worktree, error) { return nil, nil }
@@ -32,6 +34,13 @@ func (f *fakeGit) AddWorktree(_ context.Context, path, branch string) error {
 }
 func (f *fakeGit) RemoveWorktree(_ context.Context, path string) error {
 	f.removed = path
+	return nil
+}
+func (f *fakeGit) DeleteBranch(_ context.Context, branch string) error {
+	if f.delBranchErr != nil {
+		return f.delBranchErr
+	}
+	f.deletedBranches = append(f.deletedBranches, branch)
 	return nil
 }
 func (f *fakeGit) Dirty(_ context.Context, _ string) (bool, error)           { return false, nil }
@@ -143,6 +152,43 @@ func TestRemoveTearsDownInRepo(t *testing.T) {
 	got, _ := s.GetWorktree(context.Background(), "orchestra", "tower/x")
 	if got != nil {
 		t.Errorf("should be deleted: %+v", got)
+	}
+}
+
+func TestRemoveDeletesBranchSoSameNameReAdds(t *testing.T) {
+	g := &fakeGit{}
+	svc, _ := newSvc(t, g)
+	mustRepo(t, svc, "/pers/orchestra")
+	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Remove(context.Background(), "orchestra", "x"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if len(g.deletedBranches) != 1 || g.deletedBranches[0] != "tower/x" {
+		t.Fatalf("want branch tower/x deleted, got %v", g.deletedBranches)
+	}
+	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
+		t.Fatalf("re-add after remove failed: %v", err)
+	}
+}
+
+func TestRemoveKeepsUnmergedBranchAndReportsIt(t *testing.T) {
+	g := &fakeGit{delBranchErr: errors.New("not fully merged")}
+	svc, s := newSvc(t, g)
+	mustRepo(t, svc, "/pers/orchestra")
+	if _, err := svc.Add(context.Background(), "orchestra", "x"); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.Remove(context.Background(), "orchestra", "x")
+	if !errors.Is(err, ErrBranchKeptUnmerged) {
+		t.Fatalf("want ErrBranchKeptUnmerged, got %v", err)
+	}
+	// Worktree row should still be cleaned out so the TUI doesn't show
+	// a stale entry — only the branch ref lingers.
+	got, _ := s.GetWorktree(context.Background(), "orchestra", "tower/x")
+	if got != nil {
+		t.Errorf("worktree row should be deleted: %+v", got)
 	}
 }
 

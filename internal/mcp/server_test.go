@@ -22,6 +22,7 @@ type fakeGit struct {
 func (f *fakeGit) Worktrees(context.Context) ([]observe.Worktree, error) { return f.worktrees, nil }
 func (*fakeGit) AddWorktree(context.Context, string, string) error       { return nil }
 func (*fakeGit) RemoveWorktree(context.Context, string) error            { return nil }
+func (*fakeGit) DeleteBranch(context.Context, string) error              { return nil }
 func (*fakeGit) Dirty(context.Context, string) (bool, error)             { return false, nil }
 func (*fakeGit) AheadBehind(context.Context, string) (int, int, error)   { return 0, 0, nil }
 func (*fakeGit) LastCommit(context.Context, string) (time.Time, string, error) {

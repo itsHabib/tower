@@ -47,6 +47,15 @@ func (g *GitObserver) RemoveWorktree(ctx context.Context, path string) error {
 	return nil
 }
 
+// DeleteBranch deletes the named branch with `git branch -d`, which
+// refuses if the branch has commits not yet merged upstream.
+func (g *GitObserver) DeleteBranch(ctx context.Context, branch string) error {
+	if _, err := g.Runner.Run(ctx, g.Repo, "git", "branch", "-d", branch); err != nil {
+		return fmt.Errorf("git branch -d: %w", err)
+	}
+	return nil
+}
+
 // Dirty reports whether the worktree at path has uncommitted changes.
 func (g *GitObserver) Dirty(ctx context.Context, path string) (bool, error) {
 	out, err := g.Runner.Run(ctx, path, "git", "status", "--porcelain")
