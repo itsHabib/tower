@@ -48,18 +48,23 @@ VIEW
 
 ACTIONS
   enter          cd into cursor row's worktree (exits tower)
-  a              add a new tower-style worktree in cursor row's repo
-  d              remove cursor row's worktree (refuses main)
+  a              add a worktree in the cursor row's repo (or the only repo
+                 if the board is empty)
+  r              register a repo with tower (path, empty for cwd)
+  d              remove cursor row's worktree (deletes branch only if
+                 it's fully merged; refuses main worktree)
   o              open cursor row's PR in browser
-  c              spawn claude with a new worktree (asks: mode → name → prompt)
-                 mode = terminal (new tab) or background (headless via -p)
+  c              spawn claude with a new worktree
+                 3 prompts: [1/3] terminal-or-background → [2/3] worktree
+                 name → [3/3] initial prompt (required for background)
 
 SYNC
-  s              sync from git + GitHub
-  r              reconcile from git only (no network)
+  s              sync from git + GitHub (reconcile + PR/CI/reviews)
 
 QUIT
   q / ctrl+c     quit
+
+A/B column = commits Ahead / Behind the branch's upstream.
 
 Press ? or esc to dismiss.`
 
@@ -73,7 +78,7 @@ func (m *Model) viewHeader() string {
 	if m.mode == ViewFlat {
 		mode = "flat"
 	}
-	hint := dimStyle.Render(fmt.Sprintf("[?] help  [q] quit  [s] sync  [g] %s  [/] filter  [enter] cd  [a] add  [c] claude  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
+	hint := dimStyle.Render(fmt.Sprintf("[?] help  [q] quit  [s] sync  [g] %s  [/] filter  [enter] cd  [a] worktree  [r] repo  [c] claude+wt  · auto-refresh %ds", mode, int(AutoRefreshInterval.Seconds())))
 	syncState := ""
 	if m.syncing {
 		syncState = pendingStyle.Render("◯ syncing…")
@@ -91,15 +96,17 @@ func (m *Model) viewHeader() string {
 func (m *Model) viewInputLine() string {
 	switch m.input {
 	case inputAddName:
-		return cursorStyle.Render(fmt.Sprintf("add to %s: %s_", m.inputTarget.wt.Repo, m.inputBuf))
+		return cursorStyle.Render(fmt.Sprintf("add worktree to %s — name: %s_", m.inputTarget.wt.Repo, m.inputBuf))
+	case inputAddRepoPath:
+		return cursorStyle.Render(fmt.Sprintf("register repo — path to repo dir (e.g. ../roxiq, /abs/path; empty=cwd): %s_", m.inputBuf))
 	case inputClaudeSpawnMode:
-		return cursorStyle.Render(fmt.Sprintf("spawn claude in %s — [t]erminal (new tab) or [b]ackground (headless)? esc to cancel", m.inputTarget.wt.Repo))
+		return cursorStyle.Render(fmt.Sprintf("claude+worktree in %s — [1/3] [t]erminal (new tab) or [b]ackground (headless)? esc to cancel", m.inputTarget.wt.Repo))
 	case inputClaudeName:
-		return cursorStyle.Render(fmt.Sprintf("%s — worktree name: %s_", m.spawnTargetLabel(), m.inputBuf))
+		return cursorStyle.Render(fmt.Sprintf("claude+worktree (%s) — [2/3] worktree name: %s_", m.spawnTargetLabel(), m.inputBuf))
 	case inputClaudePrompt:
-		return cursorStyle.Render(fmt.Sprintf("%s — initial prompt for %s%s: %s_", m.spawnTargetLabel(), m.stagedName, m.promptHint(), m.inputBuf))
+		return cursorStyle.Render(fmt.Sprintf("claude+worktree (%s) — [3/3] initial prompt for %s%s: %s_", m.spawnTargetLabel(), m.stagedName, m.promptHint(), m.inputBuf))
 	case inputConfirmDelete:
-		return cursorStyle.Render(fmt.Sprintf("remove %s/%s? [y/N]", m.inputTarget.wt.Repo, m.inputTarget.wt.Branch))
+		return cursorStyle.Render(fmt.Sprintf("remove worktree %s/%s (and delete branch if merged)? [y/N]", m.inputTarget.wt.Repo, m.inputTarget.wt.Branch))
 	case inputNone:
 	}
 	return ""
@@ -147,9 +154,9 @@ func (m *Model) emptyHint() string {
 		return "loading…"
 	}
 	if m.noRepos {
-		return "no repos registered. run `tower repo add` from a git repo to start."
+		return "no repos registered. press R to register one (empty path = cwd) or run `tower repo add`."
 	}
-	return "no worktrees in any registered repo. create one with `tower add <name>` from inside a repo."
+	return "no worktrees yet. press a to create one (uses the only repo if there's just one), or run `tower add <name>` from a repo."
 }
 
 func (m *Model) viewFlat() string {
@@ -293,15 +300,13 @@ func formatLast(t time.Time, subject string) string {
 func (m *Model) viewFooter() string {
 	parts := []string{fmt.Sprintf("%d worktrees", len(m.rows))}
 	dirty := 0
-	repos := map[string]bool{}
 	for _, r := range m.rows {
-		repos[r.wt.Repo] = true
 		if r.wt.Dirty {
 			dirty++
 		}
 	}
-	if len(repos) > 1 {
-		parts = append(parts, fmt.Sprintf("%d repos", len(repos)))
+	if len(m.repos) > 0 {
+		parts = append(parts, fmt.Sprintf("%d repos", len(m.repos)))
 	}
 	if dirty > 0 {
 		parts = append(parts, fmt.Sprintf("%d dirty", dirty))
@@ -313,6 +318,9 @@ func (m *Model) viewFooter() string {
 	visible := m.visibleRows()
 	if len(visible) > 0 && m.cursor >= 0 && m.cursor < len(visible) {
 		footer += "\n" + dimStyle.Render(visible[m.cursor].wt.Path)
+	}
+	if m.info != "" {
+		footer += "\n" + infoStyle.Render(m.info)
 	}
 	if m.err != nil {
 		footer += "\n" + errStyle.Render("error: "+m.err.Error())

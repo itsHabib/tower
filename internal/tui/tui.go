@@ -6,8 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +21,24 @@ import (
 	"github.com/itsHabib/tower/internal/store"
 	"github.com/itsHabib/tower/internal/workflow"
 )
+
+// dbg logs to %TEMP%/tower-debug.log when TOWER_DEBUG=1 in the env.
+// Always non-nil so callers don't need to nil-check.
+var dbg = newDebugLogger()
+
+func newDebugLogger() *log.Logger {
+	if os.Getenv("TOWER_DEBUG") == "" {
+		return log.New(io.Discard, "", 0)
+	}
+	path := filepath.Join(os.TempDir(), "tower-debug.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return log.New(io.Discard, "", 0)
+	}
+	l := log.New(f, "", log.LstdFlags|log.Lmicroseconds)
+	l.Printf("=== tower TUI debug log opened at %s ===", path)
+	return l
+}
 
 // AutoRefreshInterval is how often the TUI re-syncs in the background.
 const AutoRefreshInterval = 60 * time.Second
@@ -49,6 +72,7 @@ type Model struct {
 	workflow    *workflow.Service
 	store       store.Store
 	rows        []worktreeRow
+	repos       []domain.Repo
 	cursor      int
 	mode        ViewMode
 	filter      string
@@ -56,6 +80,7 @@ type Model struct {
 	syncing     bool
 	lastSync    time.Time
 	err         error
+	info        string // transient success message; cleared on next action
 	noRepos     bool
 	width       int
 	height      int
@@ -73,10 +98,11 @@ type Model struct {
 // mode; the others are one-shot prompts that act on enter.
 type inputMode int
 
-// Input modes for one-shot prompts (a/d/c). inputNone = no prompt active.
+// Input modes for one-shot prompts (a/R/d/c). inputNone = no prompt active.
 const (
 	inputNone            inputMode = iota
 	inputAddName                   // typing a name for `a` (new tower-style worktree)
+	inputAddRepoPath               // typing a path for `R` (register a repo)
 	inputClaudeSpawnMode           // picking [t]erminal / [b]ackground for `c`
 	inputClaudeName                // typing a worktree name for `c`
 	inputClaudePrompt              // typing optional initial prompt for `c`
@@ -126,13 +152,12 @@ func tickCmd(d time.Duration) tea.Cmd {
 
 type loadedMsg struct {
 	rows    []worktreeRow
+	repos   []domain.Repo
 	noRepos bool
 	err     error
 }
 
 type syncedMsg struct{ err error }
-
-type reconciledMsg struct{ err error }
 
 type addedMsg struct {
 	wt  *domain.Worktree
@@ -140,6 +165,11 @@ type addedMsg struct {
 }
 
 type removedMsg struct{ err error }
+
+type repoAddedMsg struct {
+	repo *domain.Repo
+	err  error
+}
 
 func addCmd(ctx context.Context, wf *workflow.Service, repoName, name string) tea.Cmd {
 	return func() tea.Msg {
@@ -150,13 +180,21 @@ func addCmd(ctx context.Context, wf *workflow.Service, repoName, name string) te
 
 func removeCmd(ctx context.Context, wf *workflow.Service, repoName, name string) tea.Cmd {
 	return func() tea.Msg {
-		return removedMsg{err: wf.Remove(ctx, repoName, name)}
+		dbg.Printf("removeCmd: calling wf.Remove(repo=%q, name=%q)", repoName, name)
+		err := wf.Remove(ctx, repoName, name)
+		if err != nil {
+			dbg.Printf("removeCmd: wf.Remove returned err: %v", err)
+		} else {
+			dbg.Printf("removeCmd: wf.Remove returned nil (success)")
+		}
+		return removedMsg{err: err}
 	}
 }
 
-func reconcileCmd(ctx context.Context, wf *workflow.Service) tea.Cmd {
+func addRepoCmd(ctx context.Context, wf *workflow.Service, path string) tea.Cmd {
 	return func() tea.Msg {
-		return reconciledMsg{err: wf.Reconcile(ctx)}
+		r, err := wf.AddRepo(ctx, path, "")
+		return repoAddedMsg{repo: r, err: err}
 	}
 }
 
@@ -180,7 +218,7 @@ func loadCmd(ctx context.Context, wf *workflow.Service, s store.Store) tea.Cmd {
 			rows = append(rows, r)
 		}
 		SortRows(rows, SortAttention)
-		return loadedMsg{rows: rows, noRepos: len(repos) == 0}
+		return loadedMsg{rows: rows, repos: repos, noRepos: len(repos) == 0}
 	}
 }
 
@@ -248,15 +286,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
-	case reconciledMsg:
+	case loadedMsg:
+		m.rows = msg.rows
+		m.repos = msg.repos
+		m.noRepos = msg.noRepos
+		// Only overwrite m.err if the load itself failed. Plain
+		// "no error" reloads (the common case after every mutation
+		// or auto-refresh tick) must not clobber a freshly-set
+		// error from the action that triggered them — that wiped
+		// errors before the user could read them.
 		if msg.err != nil {
 			m.err = msg.err
 		}
-		return m, nil
-	case loadedMsg:
-		m.rows = msg.rows
-		m.noRepos = msg.noRepos
-		m.err = msg.err
 		if m.cursor >= len(m.rows) && len(m.rows) > 0 {
 			m.cursor = len(m.rows) - 1
 		}
@@ -281,20 +322,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case addedMsg:
 		return m.afterMutation(msg.err)
 	case removedMsg:
+		dbg.Printf("Update: removedMsg arrived (err=%v)", msg.err)
 		return m.afterMutation(msg.err)
+	case repoAddedMsg:
+		m.info = ""
+		if msg.err != nil {
+			m.err = msg.err
+			return m, loadCmd(m.ctx, m.workflow, m.store)
+		}
+		m.err = nil
+		if msg.repo != nil {
+			m.info = fmt.Sprintf("registered %s at %s — syncing to pick up worktrees…", msg.repo.Name, msg.repo.Path)
+		}
+		// Kick a sync now so the new repo's worktrees show up without
+		// waiting on the 60s auto-refresh tick — that wait is what
+		// reads as "nothing happened" the first time you press R.
+		if !m.syncing {
+			m.syncing = true
+			return m, tea.Batch(syncCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.workflow, m.store))
+		}
+		return m, loadCmd(m.ctx, m.workflow, m.store)
 	}
 	return m, nil
 }
 
 // afterMutation handles the common post-action flow for add/remove:
-// surface the error if any, otherwise reload the rows so the board
-// reflects the new state.
+// always reload the rows (so partial successes like "worktree gone but
+// branch kept" still update the board) and surface any error message.
 func (m *Model) afterMutation(err error) (tea.Model, tea.Cmd) {
-	if err != nil {
-		m.err = err
-		return m, nil
-	}
-	m.err = nil
+	m.err = err
+	m.info = ""
 	return m, loadCmd(m.ctx, m.workflow, m.store)
 }
 
@@ -341,6 +398,7 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) bool {
 }
 
 func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	dbg.Printf("handleActionKey: %q (input=%d filter=%q filtering=%v helpVisible=%v)", msg.String(), m.input, m.filter, m.filtering, m.helpVisible)
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -349,8 +407,6 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.syncing = true
 			return m, syncCmd(m.ctx, m.workflow)
 		}
-	case "r":
-		return m, tea.Sequence(reconcileCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.workflow, m.store))
 	case "g":
 		if m.mode == ViewGrouped {
 			m.mode = ViewFlat
@@ -369,6 +425,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startClaudeSpawn()
 	case "a":
 		m.startAddName()
+	case "r":
+		m.startAddRepoPath()
 	case "d":
 		m.startConfirmDelete()
 	case "?":
@@ -433,15 +491,35 @@ func (m *Model) openCursorPR() {
 }
 
 // startAddName opens the prompt for `a`. Target repo comes from the
-// cursor row; if the board is empty, errors out (no repo to infer).
+// cursor row; if the board is empty, falls back to the only registered
+// repo (so you can bootstrap from zero worktrees) and errors otherwise.
 func (m *Model) startAddName() {
 	visible := m.visibleRows()
-	if len(visible) == 0 {
-		m.err = errors.New("no row to infer repo from; use `tower add` from the shell instead")
+	if len(visible) > 0 {
+		m.inputTarget = visible[m.cursor]
+		m.input = inputAddName
+		m.inputBuf = ""
+		m.err = nil
 		return
 	}
-	m.inputTarget = visible[m.cursor]
-	m.input = inputAddName
+	switch len(m.repos) {
+	case 0:
+		m.err = errors.New("no repos registered. press R to register one")
+		return
+	case 1:
+		m.inputTarget = worktreeRow{wt: domain.Worktree{Repo: m.repos[0].Name}}
+		m.input = inputAddName
+		m.inputBuf = ""
+		m.err = nil
+	default:
+		m.err = errors.New("multiple repos registered; create a worktree from the shell with `tower add --repo <name> <name>`")
+	}
+}
+
+// startAddRepoPath opens the prompt for `R`: type a path (or empty for
+// cwd) to register as a repo with tower.
+func (m *Model) startAddRepoPath() {
+	m.input = inputAddRepoPath
 	m.inputBuf = ""
 	m.err = nil
 }
@@ -466,26 +544,45 @@ func (m *Model) startClaudeSpawn() {
 // the main worktree of a repo (path equals repo's registered path) so
 // you can't accidentally tear down the primary checkout.
 func (m *Model) startConfirmDelete() {
+	dbg.Printf("startConfirmDelete: cursor=%d rows=%d filter=%q", m.cursor, len(m.rows), m.filter)
+	m.info = ""
 	visible := m.visibleRows()
+	dbg.Printf("startConfirmDelete: visible=%d", len(visible))
 	if len(visible) == 0 {
+		m.err = errors.New("no worktree to remove (no rows visible)")
+		dbg.Printf("startConfirmDelete: early-return (no visible rows)")
+		return
+	}
+	if m.cursor < 0 || m.cursor >= len(visible) {
+		m.err = errors.New("cursor is off the visible list; press j/k to move it onto a row")
+		dbg.Printf("startConfirmDelete: early-return (cursor=%d out of range)", m.cursor)
 		return
 	}
 	row := visible[m.cursor]
+	dbg.Printf("startConfirmDelete: target row repo=%q branch=%q path=%q", row.wt.Repo, row.wt.Branch, row.wt.Path)
 	repo, err := m.store.GetRepo(m.ctx, row.wt.Repo)
 	if err != nil {
 		m.err = err
+		dbg.Printf("startConfirmDelete: GetRepo error: %v", err)
 		return
 	}
-	// filepath.Clean normalizes separators (registered repo paths come
-	// from filepath.Abs and use OS separators; git's worktree output
-	// uses forward slashes on Windows, so a raw == comparison missed).
-	if repo != nil && filepath.Clean(repo.Path) == filepath.Clean(row.wt.Path) {
-		m.err = errors.New("refusing to remove main worktree of " + row.wt.Repo)
+	if repo != nil {
+		dbg.Printf("startConfirmDelete: repo.Path=%q", repo.Path)
+	}
+	// Compare via os.SameFile so different surface forms of the same
+	// directory (forward vs backward slashes, 8.3 short names like
+	// MICHAE~1 vs the long form, drive-letter casing) all collapse to
+	// "same dir". String equality misses these on Windows, which
+	// silently opened the confirm prompt on the main worktree.
+	if repo != nil && samePath(repo.Path, row.wt.Path) {
+		m.err = fmt.Errorf("refusing to remove main worktree of %s (path %s); pick a non-main row", row.wt.Repo, row.wt.Path)
+		dbg.Printf("startConfirmDelete: refusing (main worktree)")
 		return
 	}
 	m.inputTarget = row
 	m.input = inputConfirmDelete
 	m.err = nil
+	dbg.Printf("startConfirmDelete: prompt opened, awaiting y/N")
 }
 
 func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -494,7 +591,7 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case inputClaudeSpawnMode:
 		return m.handleSpawnModeKey(msg)
-	case inputNone, inputAddName, inputClaudeName, inputClaudePrompt:
+	case inputNone, inputAddName, inputAddRepoPath, inputClaudeName, inputClaudePrompt:
 		return m.handleTextInputKey(msg)
 	}
 	return m, nil
@@ -515,13 +612,18 @@ func (m *Model) handleSpawnModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	dbg.Printf("handleConfirmKey: got key=%q (input=%d)", msg.String(), m.input)
 	switch msg.String() {
 	case "y", "Y":
 		target := m.inputTarget
 		m.input = inputNone
+		dbg.Printf("handleConfirmKey: y confirmed; dispatching removeCmd repo=%q branch=%q", target.wt.Repo, target.wt.Branch)
 		return m, removeCmd(m.ctx, m.workflow, target.wt.Repo, target.wt.Branch)
 	case "n", "N", "esc", "enter":
+		dbg.Printf("handleConfirmKey: cancelled")
 		m.input = inputNone
+	default:
+		dbg.Printf("handleConfirmKey: ignored key %q (need y/Y to confirm)", msg.String())
 	}
 	return m, nil
 }
@@ -564,6 +666,18 @@ func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, addCmd(m.ctx, m.workflow, target.wt.Repo, buf)
+	case inputAddRepoPath:
+		m.input = inputNone
+		path := buf
+		if path == "" {
+			top, err := gitTopLevel(m.ctx)
+			if err != nil {
+				m.err = fmt.Errorf("infer cwd repo (cd into a git repo or type a path): %w", err)
+				return m, nil
+			}
+			path = top
+		}
+		return m, addRepoCmd(m.ctx, m.workflow, path)
 	case inputClaudeName:
 		if buf == "" {
 			m.input = inputNone
@@ -606,4 +720,30 @@ func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
 		// not reachable here (filtered by handleInputKey).
 	}
 	return m, nil
+}
+
+// gitTopLevel returns the repo root for the current working directory.
+// Used by `r` when the user submits an empty path.
+func gitTopLevel(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// samePath reports whether two paths refer to the same directory on
+// disk, robust to surface-form differences: separator style, Windows
+// 8.3 short names (FOO~1 vs FooBarBaz), drive-letter casing. Falls
+// back to filepath.Clean string equality if either path is missing.
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }

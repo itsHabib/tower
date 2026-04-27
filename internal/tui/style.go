@@ -9,6 +9,7 @@ var (
 	cursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
 	pendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	infoStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Bold(true)
 
 	priorityStyles = map[Priority]lipgloss.Style{
 		PriorityNone:             lipgloss.NewStyle(),
