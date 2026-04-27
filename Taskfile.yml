@@ -70,10 +70,13 @@ tasks:
       - go mod tidy
 
   tui:sandbox:
-    desc: Build tower and launch the TUI in an isolated sandbox env
+    desc: Build tower and prep an isolated sandbox env (prints launch cmd)
     deps: [build]
     cmds:
-      - bash scripts/setup-test-env.sh
+      - cmd: powershell -File scripts/setup-test-env.ps1
+        platforms: [windows]
+      - cmd: bash scripts/setup-test-env.sh
+        platforms: [linux, darwin]
 
   mcp:smoke:
     desc: Quick smoke test against tower mcp serve (lists tools)

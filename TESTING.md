@@ -64,12 +64,18 @@ TODO list.
 
 ## Manual testing in an isolated environment
 
-`scripts/setup-test-env.sh` builds tower, spins up a throwaway git
-repo, points `APPDATA` at a sandbox dir, and prints the command to
-launch the TUI against it. Use this when poking at the TUI by hand —
-no risk of stomping your real tower state.
+The setup script builds tower, spins up a throwaway git repo, points
+`APPDATA` at a sandbox dir, and prints the command to launch the TUI
+against it. Use it when poking at the TUI by hand — no risk of
+stomping your real tower state.
+
+```powershell
+# PowerShell
+powershell -File scripts\setup-test-env.ps1
+```
 
 ```bash
+# bash / Git Bash / WSL
 bash scripts/setup-test-env.sh
 ```
 

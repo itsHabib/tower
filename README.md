@@ -255,6 +255,18 @@ task test:int      # adds integration (real git, real tower.exe, MCP server)
 task tui:sandbox   # isolated TUI sandbox for manual poking
 ```
 
+For a sandbox without `task` installed:
+
+```powershell
+# PowerShell
+powershell -File scripts\setup-test-env.ps1
+```
+
+```bash
+# bash / Git Bash
+bash scripts/setup-test-env.sh
+```
+
 ---
 
 ## License
