@@ -329,7 +329,13 @@ func TestTeatest_HelpScreen(t *testing.T) {
 // behaviour. Any column-width or styling change rewrites the golden.
 func TestTeatest_View_Snapshot(t *testing.T) {
 	tm := newTestModel(t)
+	// Wait for content AND for the background sync to complete. Without
+	// the sync wait the snapshot is racey: on a fast Linux runner sync
+	// finishes before the snapshot, on Windows it usually doesn't, and
+	// the renderer emits different header / footer in each case
+	// ("◯ syncing…" before vs. "synced Xs ago" after).
 	waitForOutput(t, tm, "alpha", "beta", "gamma")
+	waitForOutput(t, tm, "synced")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
@@ -340,15 +346,18 @@ func TestTeatest_View_Snapshot(t *testing.T) {
 
 // scrubVolatile replaces per-run-changing fragments of the rendered
 // view with stable placeholders so golden diffs only reflect real
-// layout changes. Right now: the cursor-row path footer (which
-// embeds the test's t.TempDir()).
+// layout changes:
+//   - the cursor-row path footer (embeds t.TempDir()),
+//   - "synced Xs ago" (counts up between sync completion and snapshot).
 var (
 	tempPathRE = regexp.MustCompile(`(?i)[a-z]:\\[^\r\n]+temp\\[^\r\n]+`)
 	unixTmpRE  = regexp.MustCompile(`/(?:tmp|var/folders/[^\s]+)/[^\r\n]+`)
+	syncTimeRE = regexp.MustCompile(`synced \S+ ago`)
 )
 
 func scrubVolatile(s string) string {
 	s = tempPathRE.ReplaceAllString(s, "<TMP_PATH>")
 	s = unixTmpRE.ReplaceAllString(s, "<TMP_PATH>")
+	s = syncTimeRE.ReplaceAllString(s, "synced <AGE> ago")
 	return s
 }
