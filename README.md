@@ -1,5 +1,7 @@
 # tower
 
+[![ci](https://github.com/itsHabib/tower/actions/workflows/ci.yml/badge.svg)](https://github.com/itsHabib/tower/actions/workflows/ci.yml)
+
 A control tower for parallel agentic work. See, at a glance, every
 worktree and the pull request it turns into — all from one place.
 
@@ -265,11 +267,11 @@ worktrees land at `<repo>/.worktrees/<name>`.
 
 ## Testing
 
-See [TESTING.md](TESTING.md). Three tiers:
+See [TESTING.md](TESTING.md). Two tiers:
 
 ```bash
 task test          # unit (fast, no shellouts)
-task test:int      # adds integration (real git, real tower.exe, MCP server)
+task test:int      # adds integration (real git, real tower.exe, MCP server, teatest)
 task tui:sandbox   # isolated TUI sandbox for manual poking
 ```
 

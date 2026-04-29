@@ -1,6 +1,6 @@
 # Testing Tower
 
-Tower has three tiers of tests, separated by the resources they need.
+Tower has two tiers of tests, separated by the resources they need.
 
 ## Tiers
 
