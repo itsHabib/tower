@@ -133,17 +133,17 @@ func initRepo(ctx context.Context, dir string) error {
 		{"config", "user.name", "sandbox"},
 	}
 	for _, args := range steps {
-		if err := runIn(ctx, dir, "git", args...); err != nil {
+		if err := runGit(ctx, dir, args...); err != nil {
 			return err
 		}
 	}
 	if err := writeFile(filepath.Join(dir, "README.md"), "# "+filepath.Base(dir)+"\n"); err != nil {
 		return err
 	}
-	if err := runIn(ctx, dir, "git", "add", "README.md"); err != nil {
+	if err := runGit(ctx, dir, "add", "README.md"); err != nil {
 		return err
 	}
-	if err := runIn(ctx, dir, "git", "commit", "-qm", "initial"); err != nil {
+	if err := runGit(ctx, dir, "commit", "-qm", "initial"); err != nil {
 		return err
 	}
 	for i := 1; i <= 3; i++ {
@@ -151,10 +151,10 @@ func initRepo(ctx context.Context, dir string) error {
 		if err := writeFile(filepath.Join(dir, f), fmt.Sprintf("seed %d\n", i)); err != nil {
 			return err
 		}
-		if err := runIn(ctx, dir, "git", "add", f); err != nil {
+		if err := runGit(ctx, dir, "add", f); err != nil {
 			return err
 		}
-		if err := runIn(ctx, dir, "git", "commit", "-qm", fmt.Sprintf("main update %d", i)); err != nil {
+		if err := runGit(ctx, dir, "commit", "-qm", fmt.Sprintf("main update %d", i)); err != nil {
 			return err
 		}
 	}
@@ -174,12 +174,12 @@ func seedWorktree(ctx context.Context, wf *workflow.Service, repoName, repoPath 
 			return err
 		}
 	} else {
-		if err := runIn(ctx, repoPath, "git", "worktree", "add", "-q", "-b", branch, wtPath); err != nil {
+		if err := runGit(ctx, repoPath, "worktree", "add", "-q", "-b", branch, wtPath); err != nil {
 			return err
 		}
 	}
 
-	if err := runIn(ctx, wtPath, "git", "branch", "--set-upstream-to=main", branch); err != nil {
+	if err := runGit(ctx, wtPath, "branch", "--set-upstream-to=main", branch); err != nil {
 		return err
 	}
 
@@ -188,11 +188,11 @@ func seedWorktree(ctx context.Context, wf *workflow.Service, repoName, repoPath 
 		if err := writeFile(filepath.Join(wtPath, f), fmt.Sprintf("change %d\n", i+1)); err != nil {
 			return err
 		}
-		if err := runIn(ctx, wtPath, "git", "add", f); err != nil {
+		if err := runGit(ctx, wtPath, "add", f); err != nil {
 			return err
 		}
 		msg := fmt.Sprintf("%s: change %d", branch, i+1)
-		if err := runIn(ctx, wtPath, "git", "commit", "-qm", msg); err != nil {
+		if err := runGit(ctx, wtPath, "commit", "-qm", msg); err != nil {
 			return err
 		}
 	}
@@ -208,12 +208,15 @@ func writeFile(path, contents string) error {
 	return os.WriteFile(path, []byte(contents), 0o644)
 }
 
-func runIn(ctx context.Context, dir, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+// runGit shells out to git from dir with the given args. The seeder
+// only ever invokes git, so we don't bother parameterising the program
+// name (lint catches that as a dead arg).
+func runGit(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, out)
+		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
 	return nil
 }

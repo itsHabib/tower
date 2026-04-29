@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -218,7 +219,7 @@ func (m *Model) viewInputLine() string {
 	case inputAddName:
 		// Two lines so the target repo is unmistakable — single-line
 		// versions of this prompt got skimmed past.
-		head := titleStyle.Render(fmt.Sprintf("→ adding worktree in %s", m.inputTarget.wt.Repo))
+		head := titleStyle.Render("→ adding worktree in " + m.inputTarget.wt.Repo)
 		body := cursorStyle.Render(fmt.Sprintf("  name: %s_", m.inputBuf))
 		return head + "\n" + body
 	case inputAddRepoPath:
@@ -345,18 +346,6 @@ func flatHeader() string {
 	)
 }
 
-func groupedHeader() string {
-	return fmt.Sprintf("%s %s %s %s %s %s %s",
-		padRight("BRANCH", colBranch),
-		padRight("DIRTY", colDirty),
-		padRight("A/B", colAB),
-		padRight("PR", colPR),
-		padRight("CI", colCI),
-		padRight("REVIEWS", colRev),
-		"LAST",
-	)
-}
-
 func repoHeader() string {
 	return fmt.Sprintf("%s %s %s %s %s %s",
 		padRight("REPO", colRepoName),
@@ -371,15 +360,15 @@ func repoHeader() string {
 func formatRepoRow(r repoRow) string {
 	dirty := "-"
 	if r.dirty > 0 {
-		dirty = fmt.Sprintf("%d", r.dirty)
+		dirty = strconv.Itoa(r.dirty)
 	}
 	openPRs := "-"
 	if r.openPRs > 0 {
-		openPRs = fmt.Sprintf("%d", r.openPRs)
+		openPRs = strconv.Itoa(r.openPRs)
 	}
 	failingCI := "-"
 	if r.failingCI > 0 {
-		failingCI = fmt.Sprintf("%d", r.failingCI)
+		failingCI = strconv.Itoa(r.failingCI)
 	}
 	last := FormatAge(r.lastCommit)
 	if last == "" {
@@ -387,7 +376,7 @@ func formatRepoRow(r repoRow) string {
 	}
 	return fmt.Sprintf("%s %s %s %s %s %s",
 		padRight(truncate(r.name, colRepoName), colRepoName),
-		padRight(fmt.Sprintf("%d", r.worktrees), colWorktrees),
+		padRight(strconv.Itoa(r.worktrees), colWorktrees),
 		padRight(dirty, colDirtyCount),
 		padRight(openPRs, colOpenPRs),
 		padRight(failingCI, colFailingCI),

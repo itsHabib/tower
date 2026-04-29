@@ -74,12 +74,24 @@ func freshRepo(t *testing.T) string {
 	return repo
 }
 
-// run shells out to bin with args and an isolated APPDATA so each test
-// has its own tower state.db. Returns combined stdout/stderr.
-func runCLI(t *testing.T, bin, appData string, args ...string) (string, error) {
+// run shells out to bin with args and an isolated state directory so
+// each test has its own tower state.db. Returns combined stdout/stderr.
+//
+// We override every path Go's os.UserConfigDir reads on each platform:
+//   - APPDATA          (Windows)
+//   - XDG_CONFIG_HOME  (Linux when set)
+//   - HOME             (Linux fallback, and macOS)
+//
+// Without all three, two CI tests can land their state.db in the same
+// shared location and clobber each other.
+func runCLI(t *testing.T, bin, stateDir string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(os.Environ(), "APPDATA="+appData)
+	cmd.Env = append(os.Environ(),
+		"APPDATA="+stateDir,
+		"XDG_CONFIG_HOME="+stateDir,
+		"HOME="+stateDir,
+	)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -194,7 +206,11 @@ func TestE2E_MCPServer_ListsTools(t *testing.T) {
 
 	// Start the MCP server. It speaks JSON-RPC over stdio.
 	cmd := exec.Command(bin, "mcp", "serve")
-	cmd.Env = append(os.Environ(), "APPDATA="+state)
+	cmd.Env = append(os.Environ(),
+		"APPDATA="+state,
+		"XDG_CONFIG_HOME="+state,
+		"HOME="+state,
+	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +333,11 @@ func TestE2E_MCPServer_RegisterAndList(t *testing.T) {
 	repo := freshRepo(t)
 
 	cmd := exec.Command(bin, "mcp", "serve")
-	cmd.Env = append(os.Environ(), "APPDATA="+state)
+	cmd.Env = append(os.Environ(),
+		"APPDATA="+state,
+		"XDG_CONFIG_HOME="+state,
+		"HOME="+state,
+	)
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {

@@ -122,14 +122,14 @@ type worktreeRow struct {
 // It aggregates over the worktrees the user can currently see (so it
 // respects the active filter).
 type repoRow struct {
-	name        string
-	path        string
-	worktrees   int
-	dirty       int
-	openPRs     int
-	failingCI   int
-	lastCommit  time.Time
-	priority    Priority
+	name       string
+	path       string
+	worktrees  int
+	dirty      int
+	openPRs    int
+	failingCI  int
+	lastCommit time.Time
+	priority   Priority
 }
 
 func newModel(ctx context.Context, wf *workflow.Service, s store.Store) *Model {
@@ -325,7 +325,9 @@ func syncCmd(ctx context.Context, wf *workflow.Service) tea.Cmd {
 	}
 }
 
-// Update routes incoming messages.
+// Update routes incoming messages. Each case delegates to a named
+// handler when there's any logic worth a name — keeps this dispatch
+// thin so the message-flow stays readable at a glance.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -334,92 +336,117 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case loadedMsg:
-		m.rows = msg.rows
-		m.repos = msg.repos
-		m.noRepos = msg.noRepos
-		// Only overwrite m.err if the load itself failed. Plain
-		// "no error" reloads (the common case after every mutation
-		// or auto-refresh tick) must not clobber a freshly-set
-		// error from the action that triggered them — that wiped
-		// errors before the user could read them.
-		if msg.err != nil {
-			m.err = msg.err
-		}
-		n := m.visibleCount()
-		if m.cursor >= n && n > 0 {
-			m.cursor = n - 1
-		}
-		if n == 0 {
-			m.cursor = 0
-		}
-		return m, nil
+		return m.handleLoaded(msg)
 	case syncedMsg:
-		m.syncing = false
-		m.lastSync = time.Now()
-		if msg.err != nil {
-			m.err = msg.err
-		}
-		return m, loadCmd(m.ctx, m.workflow, m.store)
+		return m.handleSynced(msg)
 	case tickMsg:
-		next := tickCmd(AutoRefreshInterval)
-		if m.syncing {
-			return m, next
-		}
-		m.syncing = true
-		return m, tea.Batch(syncCmd(m.ctx, m.workflow), next)
+		return m.handleTick()
 	case addedMsg:
 		return m.afterMutation(msg.err)
 	case removedMsg:
 		dbg.Printf("Update: removedMsg arrived (err=%v)", msg.err)
 		return m.afterMutation(msg.err)
 	case removedManyMsg:
-		dbg.Printf("Update: removedManyMsg removed=%d branchKept=%d failures=%d", msg.removed, msg.branchKept, len(msg.failures))
-		// Clear selections for everything the worktree-remove succeeded
-		// on (clean removes AND branch-kept). Those rows are gone from
-		// the board either way; the leftover marks should only point
-		// at rows that genuinely didn't go through.
-		for k := range m.selected {
-			if _, failed := msg.failures[k.repo+"/"+k.branch]; !failed {
-				delete(m.selected, k)
-			}
-		}
-		summary := fmt.Sprintf("removed %d worktrees", msg.removed)
-		if msg.branchKept > 0 {
-			summary += fmt.Sprintf(" (%d unmerged branch refs kept; `git branch -D` to discard)", msg.branchKept)
-		}
-		if len(msg.failures) == 0 {
-			m.err = nil
-			m.info = summary
-		} else {
-			var first error
-			for _, e := range msg.failures {
-				first = e
-				break
-			}
-			m.err = fmt.Errorf("%s; %d failed: %s", summary, len(msg.failures), firstLine(first))
-			m.info = ""
-		}
-		return m, loadCmd(m.ctx, m.workflow, m.store)
+		return m.handleRemovedMany(msg)
 	case repoAddedMsg:
-		m.info = ""
-		if msg.err != nil {
-			m.err = msg.err
-			return m, loadCmd(m.ctx, m.workflow, m.store)
-		}
-		m.err = nil
-		if msg.repo != nil {
-			m.info = fmt.Sprintf("registered %s at %s — syncing to pick up worktrees…", msg.repo.Name, msg.repo.Path)
-		}
-		// Kick a sync now so the new repo's worktrees show up without
-		// waiting on the 60s auto-refresh tick — that wait is what
-		// reads as "nothing happened" the first time you press R.
-		if !m.syncing {
-			m.syncing = true
-			return m, tea.Batch(syncCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.workflow, m.store))
-		}
-		return m, loadCmd(m.ctx, m.workflow, m.store)
+		return m.handleRepoAdded(msg)
 	}
 	return m, nil
+}
+
+// handleLoaded folds a fresh row/repo snapshot into the model. It only
+// overwrites m.err on a load-time failure: the common no-error case
+// (every mutation and auto-refresh tick triggers a reload) must not
+// clobber a freshly-set error from the action that caused the reload.
+func (m *Model) handleLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
+	m.rows = msg.rows
+	m.repos = msg.repos
+	m.noRepos = msg.noRepos
+	if msg.err != nil {
+		m.err = msg.err
+	}
+	n := m.visibleCount()
+	switch {
+	case n == 0:
+		m.cursor = 0
+	case m.cursor >= n:
+		m.cursor = n - 1
+	}
+	return m, nil
+}
+
+// handleSynced clears the syncing indicator, records the timestamp,
+// and triggers a reload so newly-discovered rows surface immediately.
+func (m *Model) handleSynced(msg syncedMsg) (tea.Model, tea.Cmd) {
+	m.syncing = false
+	m.lastSync = time.Now()
+	if msg.err != nil {
+		m.err = msg.err
+	}
+	return m, loadCmd(m.ctx, m.workflow, m.store)
+}
+
+// handleTick re-arms the periodic refresh timer and starts a sync if
+// none is in flight. Skipping the sync when one is already running
+// avoids piling up overlapping shellouts.
+func (m *Model) handleTick() (tea.Model, tea.Cmd) {
+	next := tickCmd(AutoRefreshInterval)
+	if m.syncing {
+		return m, next
+	}
+	m.syncing = true
+	return m, tea.Batch(syncCmd(m.ctx, m.workflow), next)
+}
+
+// handleRemovedMany processes a bulk-delete result. Selections drop for
+// every row where the worktree-remove succeeded (clean OR branch-kept,
+// since both leave the row gone from the board); only genuine failures
+// keep their selection mark.
+func (m *Model) handleRemovedMany(msg removedManyMsg) (tea.Model, tea.Cmd) {
+	dbg.Printf("Update: removedManyMsg removed=%d branchKept=%d failures=%d", msg.removed, msg.branchKept, len(msg.failures))
+	for k := range m.selected {
+		if _, failed := msg.failures[k.repo+"/"+k.branch]; !failed {
+			delete(m.selected, k)
+		}
+	}
+	summary := fmt.Sprintf("removed %d worktrees", msg.removed)
+	if msg.branchKept > 0 {
+		summary += fmt.Sprintf(" (%d unmerged branch refs kept; `git branch -D` to discard)", msg.branchKept)
+	}
+	if len(msg.failures) == 0 {
+		m.err = nil
+		m.info = summary
+	} else {
+		var first error
+		for _, e := range msg.failures {
+			first = e
+			break
+		}
+		m.err = fmt.Errorf("%s; %d failed: %s", summary, len(msg.failures), firstLine(first))
+		m.info = ""
+	}
+	return m, loadCmd(m.ctx, m.workflow, m.store)
+}
+
+// handleRepoAdded shows the success/failure banner for `r` and kicks a
+// sync now so the repo's worktrees show up immediately — without it,
+// the user would press r and see nothing change until the next 60s
+// auto-refresh fires, which reads as "nothing happened".
+func (m *Model) handleRepoAdded(msg repoAddedMsg) (tea.Model, tea.Cmd) {
+	m.info = ""
+	if msg.err != nil {
+		m.err = msg.err
+		return m, loadCmd(m.ctx, m.workflow, m.store)
+	}
+	m.err = nil
+	if msg.repo != nil {
+		m.info = fmt.Sprintf("registered %s at %s — syncing to pick up worktrees…", msg.repo.Name, msg.repo.Path)
+	}
+	if !m.syncing {
+		m.syncing = true
+		return m, tea.Batch(syncCmd(m.ctx, m.workflow), loadCmd(m.ctx, m.workflow, m.store))
+	}
+	return m, loadCmd(m.ctx, m.workflow, m.store)
 }
 
 // afterMutation handles the common post-action flow for add/remove:
@@ -512,42 +539,15 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "s":
-		if !m.syncing {
-			m.syncing = true
-			return m, syncCmd(m.ctx, m.workflow)
-		}
+		return m.startSync()
 	case "g":
-		if m.mode == ViewGrouped {
-			m.mode = ViewFlat
-		} else {
-			m.mode = ViewGrouped
-			// Selection is a flat-view concept; drop it on the way to
-			// grouped so it doesn't silently apply to a [D] later.
-			m.selected = nil
-		}
-		m.cursor = 0
+		m.toggleMode()
 	case " ":
 		m.toggleSelectionAtCursor()
 	case "D":
 		return m.startMultiDeleteConfirm()
 	case "enter":
-		if m.mode == ViewGrouped {
-			repos := m.visibleRepos()
-			if len(repos) > 0 && m.cursor < len(repos) {
-				// Drill into the repo: switch to flat view, scope the
-				// filter to its name. Two registered repos can't share
-				// a name so this is unambiguous.
-				m.filter = repos[m.cursor].name
-				m.mode = ViewFlat
-				m.cursor = 0
-			}
-			return m, nil
-		}
-		visible := m.visibleRows()
-		if len(visible) > 0 && m.cursor < len(visible) {
-			row := visible[m.cursor]
-			m.detailRow = &row
-		}
+		return m.handleEnter()
 	case "o":
 		m.openCursorPR()
 	case "a":
@@ -558,6 +558,52 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startConfirmDelete()
 	case "?":
 		m.helpVisible = true
+	}
+	return m, nil
+}
+
+// startSync kicks off a background sync if one isn't already in flight.
+// Idempotent — pressing s repeatedly while syncing is a no-op.
+func (m *Model) startSync() (tea.Model, tea.Cmd) {
+	if m.syncing {
+		return m, nil
+	}
+	m.syncing = true
+	return m, syncCmd(m.ctx, m.workflow)
+}
+
+// toggleMode flips between grouped and flat. Selection only applies in
+// flat view, so it gets cleared on the way to grouped — otherwise a
+// later [D] would silently target rows the user can't see.
+func (m *Model) toggleMode() {
+	if m.mode == ViewGrouped {
+		m.mode = ViewFlat
+	} else {
+		m.mode = ViewGrouped
+		m.selected = nil
+	}
+	m.cursor = 0
+}
+
+// handleEnter does mode-specific things: in grouped view enter drills
+// into the cursor repo (filter to its worktrees, switch to flat); in
+// flat view it opens the detail panel for the cursor row.
+func (m *Model) handleEnter() (tea.Model, tea.Cmd) {
+	if m.mode == ViewGrouped {
+		repos := m.visibleRepos()
+		if len(repos) > 0 && m.cursor < len(repos) {
+			// Two registered repos can't share a name, so a repo-name
+			// filter unambiguously narrows to that repo's worktrees.
+			m.filter = repos[m.cursor].name
+			m.mode = ViewFlat
+			m.cursor = 0
+		}
+		return m, nil
+	}
+	visible := m.visibleRows()
+	if len(visible) > 0 && m.cursor < len(visible) {
+		row := visible[m.cursor]
+		m.detailRow = &row
 	}
 	return m, nil
 }
@@ -777,7 +823,7 @@ func (m *Model) toggleSelectionAtCursor() {
 // background reload can't shift the snapshot under the user.
 func (m *Model) startMultiDeleteConfirm() (tea.Model, tea.Cmd) {
 	if m.mode != ViewFlat {
-		m.err = errors.New("D (bulk delete) only works in flat view — press g first")
+		m.err = errors.New("bulk delete (D) only works in flat view — press g first")
 		return m, nil
 	}
 	if len(m.selected) == 0 {
@@ -895,7 +941,7 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		dbg.Printf("handleConfirmKey: y confirmed; dispatching removeCmd repo=%q branch=%q force=%v", target.wt.Repo, target.wt.Branch, force)
 		return m, removeCmd(m.ctx, m.workflow, target.wt.Repo, target.wt.Branch, force)
 	case "n", "N", "esc", "enter":
-		dbg.Printf("handleConfirmKey: cancelled")
+		dbg.Printf("handleConfirmKey: canceled")
 		m.input = inputNone
 	default:
 		dbg.Printf("handleConfirmKey: ignored key %q (need y/Y to confirm)", msg.String())
@@ -952,7 +998,7 @@ func (m *Model) executeTextInput() (tea.Model, tea.Cmd) {
 			path = top
 		}
 		return m, addRepoCmd(m.ctx, m.workflow, path)
-	case inputNone, inputConfirmDelete:
+	case inputNone, inputConfirmDelete, inputConfirmDeleteMulti:
 		// not reachable here (filtered by handleInputKey).
 	}
 	return m, nil
