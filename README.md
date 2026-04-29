@@ -267,19 +267,28 @@ the repo so anyone who clones it gets the command available in
 The intended flow is:
 
 ```bash
-tower add my-feature        # fresh worktree at .worktrees/my-feature
-cd .worktrees/my-feature
-claude                      # start a Claude Code session here
+# 1. write a design doc and commit it
+git add docs/design/auth-cleanup.md
+git commit -m "docs: design auth-cleanup"
+git push
+
+# 2. spin up a fresh worktree
+tower add auth-cleanup        # creates .worktrees/auth-cleanup
+cd .worktrees/auth-cleanup
+
+# 3. drive it to a green PR
+claude                        # start a Claude Code session here
 # inside Claude Code:
-/ship-feature docs/design/my-feature.md
+/ship-feature docs/design/auth-cleanup.md
 ```
 
-Each worktree is its own isolated checkout, so `/ship-feature` can run
-in parallel across several of them — exactly the workflow tower is
-built around. Drop the design doc in `docs/design/` (or any markdown
-path), spin up a worktree per doc, and let each session drive its own
-PR while the board shows you which ones are dirty, which have failing
-CI, and which are waiting on reviews.
+`/ship-feature` auto-discovers design docs from `docs/design/`,
+`docs/features/`, or `docs/rfcs/` on main — those dirs are tracked
+source. (`docs/prompts/` is scratch and gitignored.) Each worktree is
+its own isolated checkout, so several `/ship-feature` runs can go in
+parallel — exactly the workflow tower is built around. The board shows
+you which ones are dirty, which have failing CI, and which are waiting
+on reviews.
 
 ---
 

@@ -24,6 +24,7 @@ vendor/
 # checkout, not part of the source tree.
 .worktrees/
 
-# scratch / handoff prompts; not part of the source tree
-docs/
+# scratch / handoff prompts only — design docs / features / rfcs are
+# tracked source so /ship-feature can discover them via `git log main`.
+docs/prompts/
 *~
