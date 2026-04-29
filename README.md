@@ -8,8 +8,11 @@ worktree and the pull request it turns into — all from one place.
 Tower is a TUI, a CLI, and an MCP server. Pick whichever surface fits
 the moment.
 
-> Status: early development. Tested on Windows; CLI works on every
-> platform.
+> Status: early development. Developed on Windows. CI exercises the
+> full unit + integration suite on Linux on every push, so both
+> platforms are known-good. macOS is untested — should work (no
+> Windows-specific code outside the spawn integration that was
+> ripped), but no one's run it yet.
 
 ---
 
