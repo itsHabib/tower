@@ -255,6 +255,34 @@ branch is gone), so you keep the post-merge context.
 
 ---
 
+## Working with Claude Code in a tower worktree
+
+The repo ships a [`/ship-feature`](.claude/skills/ship-feature/SKILL.md)
+slash command (under `.claude/skills/`) that takes a design doc through
+to a green PR with reviews requested — implementation, push, CI babysit,
+review-comment triage, all in one invocation. The skill is shipped with
+the repo so anyone who clones it gets the command available in
+[Claude Code](https://docs.claude.com/en/docs/claude-code).
+
+The intended flow is:
+
+```bash
+tower add my-feature        # fresh worktree at .worktrees/my-feature
+cd .worktrees/my-feature
+claude                      # start a Claude Code session here
+# inside Claude Code:
+/ship-feature docs/design/my-feature.md
+```
+
+Each worktree is its own isolated checkout, so `/ship-feature` can run
+in parallel across several of them — exactly the workflow tower is
+built around. Drop the design doc in `docs/design/` (or any markdown
+path), spin up a worktree per doc, and let each session drive its own
+PR while the board shows you which ones are dirty, which have failing
+CI, and which are waiting on reviews.
+
+---
+
 ## Configuration
 
 Tower stores its state in `<UserConfigDir>/tower/state.db` (a single

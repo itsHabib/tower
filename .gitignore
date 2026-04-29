@@ -20,6 +20,10 @@ vendor/
 # integration-test sandbox (created by scripts/setup-test-env.sh)
 .sandbox/
 
+# tower's own dev worktrees — created by `tower add <name>` from this
+# checkout, not part of the source tree.
+.worktrees/
+
 # scratch / handoff prompts; not part of the source tree
 docs/
 *~
